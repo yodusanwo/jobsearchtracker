@@ -291,7 +291,14 @@ export default function JobSearchTracker() {
       setApplications(apps);
       setOutreach(out);
       setMeetings(meets);
-      setContacts(cts);
+      let mergedContacts = cts;
+      for (const o of out) {
+        mergedContacts = mergeOutreachContact(mergedContacts, o);
+      }
+      if (mergedContacts !== cts) {
+        saveKey(STORAGE_KEYS.contacts, mergedContacts);
+      }
+      setContacts(mergedContacts);
       setCompanies(cos);
       setActivities(acts);
       setResume(res);
@@ -341,6 +348,12 @@ export default function JobSearchTracker() {
         ? prev.map((p) => p.id === item.id ? { ...p, ...item } : p)
         : [{ ...item, id: item.id || uid() }, ...prev];
       saveKey(STORAGE_KEYS.outreach, next);
+      return next;
+    });
+    setContacts((prev) => {
+      const next = mergeOutreachContact(prev, item);
+      if (next === prev) return prev;
+      saveKey(STORAGE_KEYS.contacts, next);
       return next;
     });
   }, []);
@@ -1494,6 +1507,8 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
     upsertOutreach({
       channel: "Gmail",
       contact: f.contact_name || f.contact_email || "Unknown",
+      contactTitle: f.contact_title || "",
+      contactEmail: f.contact_email || "",
       company: f.company || "",
       subject: f.subject || "",
       date: f.date || todayISO(),
@@ -1688,6 +1703,105 @@ function FindingCard({ f, matchedContact, onPipeline, onOutreach, onMarkReplied,
 /* ============================================================
    OUTREACH
    ============================================================ */
+function normContactKey(s) {
+  return (s || "").toLowerCase().trim();
+}
+
+function isLikelyEmail(s) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || "").trim());
+}
+
+function outreachContactStatus(outreach) {
+  if (outreach.direction === "inbound" || outreach.status === "replied") return "replied";
+  if (outreach.status === "sent" || outreach.status === "sent_via_campaign") return "sent";
+  if (outreach.direction === "outbound") return "sent";
+  return "new";
+}
+
+const CONTACT_STATUS_RANK = {
+  new: 0, researched: 1, drafted: 2, no_response: 2, sent: 3, replied: 4,
+  meeting_scheduled: 5, not_interested: 6,
+};
+
+function mergeOutreachContact(contacts, outreach) {
+  const name = (outreach.contact || "").trim();
+  const rawEmail = (outreach.contactEmail || "").trim();
+  const company = (outreach.company || "").trim();
+  const role = (outreach.contactTitle || "").trim();
+
+  if (!name && !rawEmail) return contacts;
+  if (normContactKey(name) === "unknown" && !rawEmail) return contacts;
+
+  let existing = null;
+  if (outreach.contactId) {
+    existing = contacts.find((c) => c.id === outreach.contactId) || null;
+  }
+  if (!existing && rawEmail && isLikelyEmail(rawEmail)) {
+    existing = contacts.find((c) => normContactKey(c.email) === normContactKey(rawEmail)) || null;
+  }
+  if (!existing && name && company) {
+    existing = contacts.find((c) =>
+      normContactKey(c.name) === normContactKey(name) &&
+      normContactKey(c.company) === normContactKey(company)
+    ) || null;
+  }
+  if (!existing && name) {
+    existing = contacts.find((c) => normContactKey(c.name) === normContactKey(name)) || null;
+  }
+
+  const channel = outreach.channel === "LinkedIn" ? "linkedin"
+    : outreach.channel === "Gmail" ? "email" : "other";
+  const email = rawEmail && isLikelyEmail(rawEmail) ? rawEmail : "";
+  const linkedinUrl = rawEmail && !isLikelyEmail(rawEmail) ? rawEmail
+    : (channel === "linkedin" ? (existing?.linkedin || existing?.linkedinUrl || "") : "");
+
+  const suggestedStatus = outreachContactStatus(outreach);
+  const currentStatus = existing?.status || "new";
+  const nextStatus = (CONTACT_STATUS_RANK[suggestedStatus] ?? 0) > (CONTACT_STATUS_RANK[currentStatus] ?? 0)
+    ? suggestedStatus
+    : (existing ? currentStatus : suggestedStatus);
+
+  const outreachDate = outreach.date ? Date.parse(outreach.date) : NaN;
+  const ts = Number.isFinite(outreachDate) ? outreachDate : Date.now();
+
+  const patch = {
+    name: name || existing?.name || (email ? email.split("@")[0] : "Unknown"),
+    email: email || existing?.email || "",
+    company: company || existing?.company || "",
+    role: role || existing?.role || "",
+    channel: existing?.channel || channel,
+    source: existing?.source || "outreach",
+    status: nextStatus,
+  };
+
+  if (linkedinUrl) {
+    patch.linkedin = linkedinUrl;
+    patch.linkedinUrl = linkedinUrl;
+  } else if (existing?.linkedin || existing?.linkedinUrl) {
+    patch.linkedin = existing.linkedin || existing.linkedinUrl;
+    patch.linkedinUrl = existing.linkedinUrl || existing.linkedin;
+  }
+
+  if (suggestedStatus === "replied" && !existing?.repliedAt) {
+    patch.repliedAt = ts;
+  }
+  if (suggestedStatus === "sent" && !existing?.sentAt) {
+    patch.sentAt = ts;
+  }
+
+  if (existing) {
+    const merged = { ...existing, ...patch, updatedAt: Date.now() };
+    return contacts.map((c) => (c.id === existing.id ? merged : c));
+  }
+
+  return [{
+    ...patch,
+    id: uid(),
+    addedAt: Date.now(),
+    updatedAt: Date.now(),
+  }, ...contacts];
+}
+
 function syncCompanyFromOutreach(upsertCompany, companyName) {
   const name = (companyName || "").trim();
   if (name) upsertCompany({ name, source: "outreach" });
@@ -1832,6 +1946,7 @@ function ManualOutreachForm({ onSave, onCancel, initial }) {
   const [form, setForm] = useState({
     channel: initial?.channel || "LinkedIn",
     contact: initial?.contact || "",
+    contactEmail: initial?.contactEmail || "",
     contactTitle: initial?.contactTitle || "",
     company: initial?.company || "",
     subject: initial?.subject || "",
@@ -1859,6 +1974,10 @@ function ManualOutreachForm({ onSave, onCancel, initial }) {
       </div>
       <Field label="Contact name" required>
         <input value={form.contact} onChange={(e) => u("contact", e.target.value)} style={inputBase} />
+      </Field>
+      <Field label="Email">
+        <input value={form.contactEmail} onChange={(e) => u("contactEmail", e.target.value)} style={inputBase}
+          placeholder="optional — adds to Contacts spreadsheet" type="email" />
       </Field>
       <Field label="Title">
         <input value={form.contactTitle} onChange={(e) => u("contactTitle", e.target.value)} style={inputBase}
@@ -2516,6 +2635,7 @@ Return JSON in this shape:
     "jobType": "...",
     "requirements": ["...", "..."],
     "contact_name": "...",
+    "contact_email": "...",
     "contact_title": "...",
     "direction": "outbound" | "inbound",
     "message": "<full message text if visible, concatenated across screenshots in order>",
@@ -2585,6 +2705,7 @@ When multiple screenshots show parts of the same thing, merge: combine message t
       onSaveOutreach({
         channel: result.type === "linkedin_message" ? "LinkedIn" : "Gmail",
         contact: d.contact_name || "Unknown",
+        contactEmail: d.contact_email || "",
         contactTitle: d.contact_title || "",
         company: d.company || "",
         subject: d.subject || result.summary || "",
@@ -3679,8 +3800,8 @@ function ContactsSpreadsheetView({ contacts, upsertContact, deleteContact, flash
           </h1>
           <p style={{ color: "var(--ink-3)", fontSize: 14, margin: "4px 0 0" }}>
             {contacts.length === 0
-              ? "Your editable contact spreadsheet — add emails, names, and companies"
-              : `${contacts.length} ${contacts.length === 1 ? "contact" : "contacts"} · edits save automatically`}
+              ? "Fills in automatically from outreach — or add rows by hand"
+              : `${contacts.length} ${contacts.length === 1 ? "contact" : "contacts"} · synced from outreach · edits save automatically`}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -3711,7 +3832,7 @@ function ContactsSpreadsheetView({ contacts, upsertContact, deleteContact, flash
             Start your contact list
           </h3>
           <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 440, margin: "0 auto 20px", lineHeight: 1.55 }}>
-            Add rows here and fill in email addresses as you find them. Same data powers Campaign outreach — or import a CSV from the Campaign tab.
+            Log outreach in the Outreach tab or Campaign — contacts appear here automatically. Add emails and details manually anytime, or import a CSV from Campaign.
           </p>
           <button onClick={addRow} style={primaryBtn}>
             <Plus size={15} /> Add first contact
