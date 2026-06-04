@@ -1,26 +1,41 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #F5F1EA;
+  --paper-deep: #ECE5D7;
+  --surface: #FFFFFF;
+  --ink: #1F1B16;
+  --ink-2: #4A4138;
+  --ink-3: #8A8175;
+  --ink-4: #BFB6A8;
+  --line: #E2D9C8;
+  --line-soft: #EFEAE0;
+  --accent: #B8543A;
+  --accent-soft: #F2E3DC;
+  --accent-deep: #8A3D2B;
+  --moss: #5C6F4F;
+  --moss-soft: #E3E8DA;
+  --amber: #B8843A;
+  --amber-soft: #F4E8D4;
+  --rose: #A8456A;
+  --rose-soft: #F2DEE6;
+  --background: var(--paper);
+  --foreground: var(--ink);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+  margin: 0;
+}
+
+.jl-display {
+  font-family: "Fraunces", Georgia, serif;
+  letter-spacing: -0.01em;
 }
