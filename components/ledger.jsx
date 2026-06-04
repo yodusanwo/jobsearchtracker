@@ -63,7 +63,11 @@ const STYLE = `
 @keyframes jl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .jl-pulse { animation: jl-pulse 1.6s ease-in-out infinite; }
 @keyframes jl-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-.jl-fade { animation: jl-fade 0.25s ease-out; }
+.jl-nav-scroll::-webkit-scrollbar { height: 4px; }
+.jl-nav-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+@media (max-width: 900px) {
+  .jl-header-tagline { display: none; }
+}
 @keyframes jl-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 .jl-shimmer { background: linear-gradient(90deg, var(--paper-deep) 0%, var(--line-soft) 50%, var(--paper-deep) 100%); background-size: 200% 100%; animation: jl-shimmer 1.8s linear infinite; }
 `;
@@ -606,20 +610,38 @@ export default function JobSearchTracker() {
         paddingLeft: "max(28px, env(safe-area-inset-left))",
         paddingRight: "max(36px, env(safe-area-inset-right))",
       }}>
-        <div style={{
-          maxWidth: 1280, margin: "0 auto", padding: "18px 0",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          gap: 16, flexWrap: "wrap",
-        }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
-            <div className="jl-display" style={{ fontSize: 28, fontWeight: 500, letterSpacing: "-0.02em" }}>
-              Ledger
+        <div style={{ maxWidth: 1280, margin: "0 auto", padding: "14px 0 12px" }}>
+          {/* Top row: brand + actions — Capture always visible */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 16, marginBottom: 12,
+          }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 14, minWidth: 0 }}>
+              <div className="jl-display" style={{ fontSize: 28, fontWeight: 500, letterSpacing: "-0.02em", flexShrink: 0 }}>
+                Ledger
+              </div>
+              <div className="jl-display jl-header-tagline" style={{ fontSize: 13, color: "var(--ink-3)", fontStyle: "italic" }}>
+                a quiet space for your search
+              </div>
             </div>
-            <div className="jl-display" style={{ fontSize: 13, color: "var(--ink-3)", fontStyle: "italic" }}>
-              a quiet space for your search
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              {configured && user && (
+                <>
+                  <UsageBadge />
+                  <button onClick={signOut} title="Sign out" style={iconBtn}>
+                    <LogOut size={16} />
+                  </button>
+                </>
+              )}
+              <button onClick={() => setShotOpen(true)} style={{
+                ...primaryBtn, background: "var(--accent)", color: "white", whiteSpace: "nowrap",
+              }}>
+                <Camera size={15} /> Capture
+              </button>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Nav row — scrolls horizontally when tabs overflow */}
+          <div className="jl-scroll jl-nav-scroll" style={{ overflowX: "auto", margin: "0 -4px", padding: "0 4px 2px" }}>
             <Nav tab={tab} setTab={setTab} counts={{
               pipeline: applications.length,
               outreach: outreach.length,
@@ -635,19 +657,6 @@ export default function JobSearchTracker() {
               })(),
               activity: activities.length,
             }} />
-            {configured && user && (
-              <>
-                <UsageBadge />
-                <button onClick={signOut} title="Sign out" style={iconBtn}>
-                  <LogOut size={16} />
-                </button>
-              </>
-            )}
-            <button onClick={() => setShotOpen(true)} style={{
-              ...primaryBtn, background: "var(--accent)", color: "white",
-            }}>
-              <Camera size={15} /> Capture
-            </button>
           </div>
         </div>
       </header>
@@ -830,7 +839,7 @@ function Nav({ tab, setTab, counts }) {
     { id: "meetings", label: "Meetings", icon: Calendar, count: counts.meetings },
   ];
   return (
-    <nav style={{ display: "flex", gap: 4, alignItems: "center" }}>
+    <nav style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "nowrap", width: "max-content" }}>
       {items.map((it) => {
         const Icon = it.icon;
         const active = tab === it.id;
@@ -841,6 +850,7 @@ function Nav({ tab, setTab, counts }) {
             color: active ? "var(--paper)" : "var(--ink-2)",
             fontSize: 13, fontWeight: 500,
             display: "flex", alignItems: "center", gap: 6,
+            flexShrink: 0, whiteSpace: "nowrap",
           }}>
             <Icon size={14} strokeWidth={2} />
             {it.label}
@@ -1504,13 +1514,13 @@ function ApplicationDetail({ app, onClose, onUpdate, onDelete }) {
 }
 
 /* ============================================================
-   INBOX — Gmail scan
+   INBOX — Gmail summary (last 10 emails)
    ============================================================ */
 function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], upsertContact, flash }) {
-  const [scanning, setScanning] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
   const [findings, setFindings] = useState([]);
-  const [lastScan, setLastScan] = useState(null);
-  const [days, setDays] = useState(14);
+  const [overview, setOverview] = useState("");
+  const [lastSummary, setLastSummary] = useState(null);
   const [gmailStatus, setGmailStatus] = useState({
     loading: true, configured: false, connected: false, email: null, storageReady: true, setupRequired: false,
   });
@@ -1528,7 +1538,8 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
       const s = await loadKey(STORAGE_KEYS.inboxState, null);
       if (s) {
         setFindings(s.findings || []);
-        setLastScan(s.lastScan);
+        setOverview(s.overview || "");
+        setLastSummary(s.lastScan || s.lastSummary || null);
       }
     })();
   }, []);
@@ -1585,77 +1596,94 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     flash("Gmail disconnected");
   };
 
-  const persist = (next, ts) => saveKey(STORAGE_KEYS.inboxState, { findings: next, lastScan: ts });
+  const persist = (next, ts, ov) =>
+    saveKey(STORAGE_KEYS.inboxState, { findings: next, lastScan: ts, lastSummary: ts, overview: ov ?? overview });
 
-  const scan = async () => {
+  const summarizeInbox = async () => {
     if (!gmailStatus.connected) {
       flash("Connect Gmail first", "err");
       return;
     }
-    setScanning(true);
+    setSummarizing(true);
     try {
       const trackedEmails = contacts
         .filter((c) => c.email && (c.status === "sent" || c.status === "drafted"))
-        .map((c) => c.email)
-        .slice(0, 30); // cap to keep query manageable
-      const trackedClause = trackedEmails.length
-        ? `\n\nIMPORTANT — also specifically search for replies from these campaign contacts (they were emailed recently, watch for responses):\n- newer_than:${days}d from:(${trackedEmails.join(" OR ")})\n\nInclude any matches even if they don't look "job-related" — they're replies to outreach.`
+        .map((c) => c.email.toLowerCase())
+        .slice(0, 30);
+      const trackedNote = trackedEmails.length
+        ? `\n\nThese are campaign contacts the user has emailed — flag any email from them with job_relevant: true and category "follow_up_needed" or appropriate job category:\n${trackedEmails.join(", ")}`
         : "";
 
       const { text } = await callAI({
-        system: "You analyze the user's Gmail to surface job-search activity. Be thorough but precise. Return only valid JSON.",
-        content: `Search the user's Gmail for emails related to their job search in the last ${days} days.
+        system: "You read the user's Gmail and write concise summaries. Return only valid JSON, no markdown.",
+        content: `Use Gmail to fetch the user's 10 most recent email threads (newest first, any folder/label).
 
-Use Gmail search queries like:
-- newer_than:${days}d (recruiter OR "the role" OR "the position" OR "your application" OR interview)
-- newer_than:${days}d (offer OR "next steps" OR "moving forward" OR "unfortunately")
-- newer_than:${days}d from:(linkedin.com OR indeed.com OR lever.co OR greenhouse.io OR ashbyhq.com OR workday.com)${trackedClause}
+For each thread, read enough to understand what it's about. Then return ONLY this JSON object:
 
-For each relevant thread, return an object:
-- category: one of "recruiter_outreach", "application_confirmation", "interview_scheduling", "offer", "rejection", "follow_up_needed", "other"
-- company: company name (best guess)
-- role: role if mentioned, else ""
-- contact_name: sender name
-- contact_email: sender email (CRITICAL — always include the actual email address)
-- subject: thread subject
-- date: ISO date of latest message
-- snippet: ≤140 char summary in your own words (not quoted)
+{
+  "overview": "2-3 sentence digest of what's in their inbox lately — themes, urgency, anything job-search related",
+  "emails": [
+    {
+      "subject": "thread subject line",
+      "contact_name": "sender display name",
+      "contact_email": "sender email address",
+      "date": "ISO date of the latest message",
+      "summary": "1-2 sentence plain-English summary",
+      "job_relevant": true or false,
+      "category": if job_relevant, one of "recruiter_outreach", "application_confirmation", "interview_scheduling", "offer", "rejection", "follow_up_needed", "other" — otherwise null,
+      "company": "company name if identifiable, else empty string",
+      "role": "role title if mentioned, else empty string"
+    }
+  ]
+}
 
-Return ONLY a JSON array (max 20 items). If nothing found, return []. No commentary, no markdown.`,
+Rules:
+- Exactly 10 emails in the array, ordered newest first.
+- Include every email even if unrelated to job search (set job_relevant: false).
+- Always include contact_email when available.${trackedNote}`,
         mcp: [{ type: "url", url: "https://gmailmcp.googleapis.com/mcp/v1", name: "gmail" }],
         maxTokens: 4000,
-        feature: "inbox_scan",
+        feature: "inbox_summary",
       });
       const parsed = extractJSON(text);
-      if (Array.isArray(parsed)) {
-        const enriched = parsed.map((f) => ({ ...f, id: uid() }));
+      let emails = [];
+      let digest = "";
+      if (parsed && Array.isArray(parsed.emails)) {
+        emails = parsed.emails;
+        digest = typeof parsed.overview === "string" ? parsed.overview : "";
+      } else if (Array.isArray(parsed)) {
+        emails = parsed;
+      }
+      if (Array.isArray(emails)) {
+        const enriched = emails.map((f) => ({ ...f, id: uid() }));
         setFindings(enriched);
+        setOverview(digest);
         const ts = Date.now();
-        setLastScan(ts);
-        persist(enriched, ts);
-        flash(`Found ${enriched.length} thread${enriched.length === 1 ? "" : "s"}`);
+        setLastSummary(ts);
+        persist(enriched, ts, digest);
+        flash(`Summarized ${enriched.length} email${enriched.length === 1 ? "" : "s"}`);
       } else {
-        flash("Couldn't parse the scan", "err");
+        flash("Couldn't parse the summary", "err");
       }
     } catch (e) {
       if (e.message === "GMAIL_NOT_CONNECTED") {
-        flash("Connect Gmail to scan your inbox", "err");
+        flash("Connect Gmail to summarize your inbox", "err");
         refreshGmailStatus();
       } else if (e.message === "GMAIL_STORAGE_NOT_READY") {
         flash("Run user_integrations SQL in Supabase, then Connect Gmail again", "err");
         refreshGmailStatus();
       } else {
-        flash("Scan failed: " + e.message, "err");
+        flash("Summary failed: " + e.message, "err");
       }
     } finally {
-      setScanning(false);
+      setSummarizing(false);
     }
   };
 
   const dismiss = (id) => {
     const next = findings.filter((f) => f.id !== id);
     setFindings(next);
-    persist(next, lastScan);
+    persist(next, lastSummary);
   };
 
   const toPipeline = (f) => {
@@ -1671,7 +1699,7 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
       status,
       dateApplied: f.category === "application_confirmation" ? f.date : undefined,
       dateSaved: todayISO(),
-      notes: `From Gmail (${f.subject || ""})\n${f.snippet || ""}\n\nContact: ${f.contact_name || ""} <${f.contact_email || ""}>`,
+      notes: `From Gmail (${f.subject || ""})\n${f.summary || f.snippet || ""}\n\nContact: ${f.contact_name || ""} <${f.contact_email || ""}>`,
     });
     dismiss(f.id);
     flash(`Added ${f.company || "job"} to pipeline`);
@@ -1687,7 +1715,7 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
       subject: f.subject || "",
       date: f.date || todayISO(),
       direction: f.category === "recruiter_outreach" ? "inbound" : "outbound",
-      notes: f.snippet || "",
+      notes: f.summary || f.snippet || "",
       status: "logged",
     });
     dismiss(f.id);
@@ -1705,7 +1733,7 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
             Inbox
           </h1>
           <p style={{ color: "var(--ink-3)", fontSize: 14, margin: "4px 0 0" }}>
-            {lastScan ? `Last scanned ${niceDate(new Date(lastScan).toISOString())}` : "Scan your Gmail for job-search activity"}
+            {lastSummary ? `Last updated ${niceDate(new Date(lastSummary).toISOString())}` : "A quick digest of your 10 most recent emails"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -1730,17 +1758,10 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
               </span>
             )
           )}
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
-            style={{ ...inputBase, width: "auto", padding: "8px 12px", fontSize: 13, cursor: "pointer" }}>
-            <option value={7}>last 7 days</option>
-            <option value={14}>last 14 days</option>
-            <option value={30}>last 30 days</option>
-            <option value={60}>last 60 days</option>
-          </select>
-          <button onClick={scan} disabled={scanning || !gmailStatus.connected}
-            style={{ ...primaryBtn, opacity: scanning || !gmailStatus.connected ? 0.6 : 1 }}>
-            {scanning ? <RefreshCw size={15} className="jl-spin" /> : <Sparkles size={15} />}
-            {scanning ? "Scanning Gmail…" : "Scan Gmail"}
+          <button onClick={summarizeInbox} disabled={summarizing || !gmailStatus.connected}
+            style={{ ...primaryBtn, opacity: summarizing || !gmailStatus.connected ? 0.6 : 1 }}>
+            {summarizing ? <RefreshCw size={15} className="jl-spin" /> : <Sparkles size={15} />}
+            {summarizing ? "Summarizing…" : lastSummary ? "Refresh summary" : "Summarize inbox"}
           </button>
         </div>
       </div>
@@ -1777,7 +1798,7 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         </div>
       )}
 
-      {findings.length === 0 && !scanning && (
+      {findings.length === 0 && !summarizing && (
         <div style={{
           padding: "60px 40px", textAlign: "center",
           border: "1px dashed var(--line)", borderRadius: 16,
@@ -1785,14 +1806,14 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         }}>
           <Mail size={36} strokeWidth={1.3} style={{ color: "var(--ink-4)", marginBottom: 16 }} />
           <h3 className="jl-display" style={{ fontSize: 22, fontWeight: 400, margin: "0 0 8px" }}>
-            {lastScan ? "Inbox is quiet" : "Let me look through your email"}
+            {lastSummary ? "No emails to show" : "See what's in your inbox"}
           </h3>
           <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 420, margin: "0 auto 20px", lineHeight: 1.55 }}>
-            {lastScan
-              ? "No job-related threads in that window. Try a longer range."
+            {lastSummary
+              ? "Try refreshing — your last summary came back empty."
               : gmailStatus.connected
-                ? "I'll search your Gmail for recruiter messages, interview scheduling, offers, and rejections — and surface anything relevant here."
-                : "Connect Gmail above, then scan for recruiter messages, interview scheduling, offers, and rejections."}
+                ? "I'll read your 10 most recent emails and summarize each one. Job-related messages are flagged so you can route them to Pipeline or Outreach."
+                : "Connect Gmail above, then get a digest of your 10 most recent emails."}
           </p>
           {!gmailStatus.connected && gmailStatus.configured && (
             <a href="/api/google/auth" style={{ ...primaryBtn, textDecoration: "none", display: "inline-flex" }}>
@@ -1802,11 +1823,24 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         </div>
       )}
 
-      {scanning && findings.length === 0 && (
+      {summarizing && findings.length === 0 && (
         <div style={{ padding: "60px 0", textAlign: "center" }}>
           <div className="jl-pulse" style={{ color: "var(--ink-3)", fontSize: 14 }}>
-            Reading through your Gmail…
+            Reading your 10 most recent emails…
           </div>
+        </div>
+      )}
+
+      {overview && !summarizing && (
+        <div style={{
+          padding: "16px 18px", marginBottom: 20, borderRadius: 12,
+          background: "var(--surface)", border: "1px solid var(--line)",
+          fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 8 }}>
+            Inbox digest
+          </div>
+          {overview}
         </div>
       )}
 
@@ -1833,7 +1867,7 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
             subject: f.subject || "Reply",
             direction: "inbound",
             date: f.date || new Date(now).toISOString().slice(0, 10),
-            notes: f.snippet || "",
+            notes: f.summary || f.snippet || "",
             status: "replied",
             contactId: matchedContact.id,
           });
@@ -1867,9 +1901,12 @@ function FindingCard({ f, matchedContact, onPipeline, onOutreach, onMarkReplied,
     offer: { bg: "var(--moss-soft)", fg: "var(--moss)", label: "Offer" },
     rejection: { bg: "var(--rose-soft)", fg: "var(--rose)", label: "Rejection" },
     follow_up_needed: { bg: "var(--amber-soft)", fg: "var(--amber)", label: "Follow up" },
-    other: { bg: "var(--paper-deep)", fg: "var(--ink-3)", label: "Other" },
+    other: { bg: "var(--paper-deep)", fg: "var(--ink-3)", label: "Job-related" },
+    email: { bg: "var(--paper-deep)", fg: "var(--ink-3)", label: "Email" },
   };
-  const cat = catColors[f.category] || catColors.other;
+  const catKey = f.category && catColors[f.category] ? f.category : (f.job_relevant ? "other" : "email");
+  const cat = catColors[catKey];
+  const body = f.summary || f.snippet || "";
   return (
     <div style={{
       background: "var(--surface)",
@@ -1906,7 +1943,7 @@ function FindingCard({ f, matchedContact, onPipeline, onOutreach, onMarkReplied,
           {f.subject}
         </div>
         <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>
-          {f.snippet}
+          {body}
         </div>
         <div style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 6 }}>
           {f.contact_name} {f.contact_email && `<${f.contact_email}>`}
@@ -2075,7 +2112,7 @@ function OutreachView({ outreach, upsertOutreach, upsertCompany, deleteOutreach,
             No outreach logged yet
           </h3>
           <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 420, margin: "0 auto", lineHeight: 1.55 }}>
-            Screenshot LinkedIn messages and use <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Capture</strong>, or scan your Gmail in the Inbox tab, or log a message by hand.
+            Screenshot LinkedIn messages and use <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Capture</strong>, summarize your Gmail in the Inbox tab, or log a message by hand.
           </p>
         </div>
       ) : (
@@ -5322,7 +5359,7 @@ function BackupModal({ onClose, flash }) {
           <div style={{ padding: 16, borderRadius: 10, background: "var(--paper-deep)", border: "1px solid var(--line-soft)" }}>
             <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 14 }}>Export</div>
             <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-3)" }}>
-              Saves jobs, outreach, meetings, contacts, companies, activity log, resume, profile, inbox scan state, and briefing.
+              Saves jobs, outreach, meetings, contacts, companies, activity log, resume, profile, inbox summary state, and briefing.
             </p>
             <button onClick={exportNow} disabled={exporting} style={primaryBtn}>
               <Download size={15} /> {exporting ? "Exporting…" : "Download backup"}
@@ -5961,7 +5998,7 @@ function DashboardEmpty({ setTab }) {
     { id: "activity", label: "Log an activity", icon: PenLine, hint: "Profile on a job board, research, anything uncategorized" },
     { id: "outreach", label: "Log outreach", icon: Send, hint: "Record LinkedIn DMs, emails, every conversation" },
     { id: "meetings", label: "Track a meeting", icon: Calendar, hint: "Sync from Calendar or add interviews by hand" },
-    { id: "inbox", label: "Scan your Gmail", icon: Inbox, hint: "Let AI find recruiter messages and offers" },
+    { id: "inbox", label: "Summarize Gmail", icon: Inbox, hint: "Digest your 10 most recent emails" },
   ];
   return (
     <div style={{
@@ -7307,7 +7344,7 @@ function HelpModal({ onClose, setTab }) {
         </div>
 
         <Section title="What this is">
-          Ledger is a workspace for running a focused job search. It tracks the four streams of activity that actually move things forward — applications, conversations with people, meetings, and the companies you're focused on — and lets AI handle the tedious parts: extracting details from screenshots, scanning your Gmail for what matters, drafting personalized outreach, and giving you a daily briefing on what to do next.
+          Ledger is a workspace for running a focused job search. It tracks the four streams of activity that actually move things forward — applications, conversations with people, meetings, and the companies you're focused on — and lets AI handle the tedious parts: extracting details from screenshots, summarizing your Gmail, drafting personalized outreach, and giving you a daily briefing on what to do next.
         </Section>
 
         <Section title="The tabs at a glance">
@@ -7315,7 +7352,7 @@ function HelpModal({ onClose, setTab }) {
             <li><Link tab="dashboard">Overview</Link> — your daily landing page. Briefing, metrics, pipeline status, recent activity.</li>
             <li><Link tab="pipeline">Pipeline</Link> — kanban of every job you're tracking, six stages from Saved to Closed.</li>
             <li><Link tab="companies">Companies</Link> — every company you've engaged with, aggregated and starrable. Use this to keep a focused list.</li>
-            <li><Link tab="inbox">Inbox</Link> — AI scans your Gmail for job-search activity and surfaces it as cards you can route anywhere.</li>
+            <li><Link tab="inbox">Inbox</Link> — AI summarizes your 10 most recent Gmail messages; job-related ones can be routed to Pipeline or Outreach.</li>
             <li><Link tab="outreach">Outreach</Link> — every message sent and received, threaded by contact and channel.</li>
             <li><Link tab="activity">Activity</Link> — free-form log for anything else: profiles you created, sites you joined, research notes. Categorize later.</li>
             <li><Link tab="campaign">Campaign</Link> — import a contact list, let AI research each person, draft 5 personalized emails a day.</li>
@@ -7334,7 +7371,7 @@ function HelpModal({ onClose, setTab }) {
           <br /><br />
           <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Capture (top right).</strong> Drop or paste up to 3 related screenshots or PDFs. AI classifies the content — job posting, LinkedIn DM, application confirmation, recruiter email, interview invite, calendar invite — and pre-fills the right form. For long content that spans multiple images (an email thread or full job description), drop them in order; AI merges them into one record.
           <br /><br />
-          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Scan Gmail.</strong> The <Link tab="inbox">Inbox</Link> tab searches your last 7-60 days of email for recruiter outreach, application confirmations, interview scheduling, offers, and rejections. Each finding becomes a card you can route to Pipeline or Outreach with one click.
+          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Summarize Gmail.</strong> The <Link tab="inbox">Inbox</Link> tab reads your 10 most recent emails and writes a short digest plus one card per message. Job-related emails are flagged; route any card to Pipeline or Outreach with one click.
           <br /><br />
           <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Manual.</strong> Type it in. Always available as a fallback.
         </Section>
@@ -7356,7 +7393,7 @@ function HelpModal({ onClose, setTab }) {
         </Section>
 
         <Section title="How tracking happens automatically">
-          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Replies.</strong> When you run a Gmail scan, it specifically watches for messages from any contact you've emailed. Matches show up with a green border, a "Reply from [Name]" badge, and a one-click <Tag>Mark replied</Tag> button. Flips the contact's status and logs an inbound entry to Outreach.
+          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Replies.</strong> When you summarize your inbox, replies from campaign contacts you've emailed are highlighted with a green border, a "Reply from [Name]" badge, and a one-click <Tag>Mark replied</Tag> button.
           <br /><br />
           <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Follow-ups.</strong> Any contact who was sent an email more than 5 days ago without a reply shows up in the <Link tab="campaign">Campaign → Needs follow-up</Link> sub-tab, and surfaces as a yellow alert on the Overview. Adjust the window in Campaign settings.
           <br /><br />
@@ -7368,7 +7405,7 @@ function HelpModal({ onClose, setTab }) {
           <br /><br />
           <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Daily:</strong> Campaign tab → today's queue → research, draft, and send 5 emails.
           <br /><br />
-          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Weekly (Mondays or Fridays):</strong> Scan Gmail to pull in replies and recruiter messages. Sync Calendar to pull in new interviews. Update statuses on the Pipeline.
+          <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Weekly (Mondays or Fridays):</strong> Summarize Gmail to catch replies and recruiter messages. Sync Calendar to pull in new interviews. Update statuses on the Pipeline.
           <br /><br />
           <strong style={{ color: "var(--ink)", fontWeight: 500 }}>Monthly:</strong> review the Companies tab to see where your effort is spread. Star the ones to go deeper on. Drop the ones that aren't priorities.
         </Section>
