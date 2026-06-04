@@ -5048,7 +5048,34 @@ function AllContactsView({ contacts, filterText, setFilterText, onOpenContact })
 function ContactDetailDrawer({ contact, settings, onClose, onUpdate, onDelete, upsertOutreach, flash }) {
   const [notesEditing, setNotesEditing] = useState(false);
   const [notes, setNotes] = useState(contact.notes || "");
-  const meta = contactStatusMeta(contact.status);
+  const [draft, setDraft] = useState({
+    name: contact.name || "",
+    email: contact.email || "",
+    company: contact.company || "",
+    role: contact.role || "",
+    linkedin: contact.linkedin || "",
+  });
+
+  useEffect(() => {
+    setDraft({
+      name: contact.name || "",
+      email: contact.email || "",
+      company: contact.company || "",
+      role: contact.role || "",
+      linkedin: contact.linkedin || "",
+    });
+    setNotes(contact.notes || "");
+    setNotesEditing(false);
+  }, [contact.id]);
+
+  const saveField = (field) => {
+    const value = draft[field];
+    if (value !== (contact[field] || "")) {
+      onUpdate({ [field]: value });
+    }
+  };
+
+  const u = (field, value) => setDraft((d) => ({ ...d, [field]: value }));
 
   return (
     <div style={drawerOverlay} onClick={onClose}>
@@ -5069,10 +5096,10 @@ function ContactDetailDrawer({ contact, settings, onClose, onUpdate, onDelete, u
             </div>
             <div>
               <h2 className="jl-display" style={{ fontSize: 24, fontWeight: 500, margin: 0, letterSpacing: "-0.01em" }}>
-                {contact.name}
+                {draft.name || contact.name || "Contact"}
               </h2>
               <div style={{ fontSize: 13, color: "var(--ink-3)" }}>
-                {[contact.role, contact.company].filter(Boolean).join(" at ") || contact.email}
+                {[draft.role || contact.role, draft.company || contact.company].filter(Boolean).join(" at ") || draft.email || contact.email}
               </div>
             </div>
           </div>
@@ -5094,9 +5121,29 @@ function ContactDetailDrawer({ contact, settings, onClose, onUpdate, onDelete, u
           })}
         </div>
 
+        <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Name">
+              <input value={draft.name} onChange={(e) => u("name", e.target.value)} onBlur={() => saveField("name")} style={inputBase} />
+            </Field>
+            <Field label="Email">
+              <input value={draft.email} onChange={(e) => u("email", e.target.value)} onBlur={() => saveField("email")} style={inputBase} type="email" />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Company">
+              <input value={draft.company} onChange={(e) => u("company", e.target.value)} onBlur={() => saveField("company")} style={inputBase} placeholder="e.g. IBM" />
+            </Field>
+            <Field label="Title / role">
+              <input value={draft.role} onChange={(e) => u("role", e.target.value)} onBlur={() => saveField("role")} style={inputBase} placeholder="e.g. Recruiter" />
+            </Field>
+          </div>
+          <Field label="LinkedIn">
+            <input value={draft.linkedin} onChange={(e) => u("linkedin", e.target.value)} onBlur={() => saveField("linkedin")} style={inputBase} placeholder="https://linkedin.com/in/…" />
+          </Field>
+        </div>
+
         <div style={{ display: "grid", gap: 8, marginBottom: 20, fontSize: 13 }}>
-          <DetailRow label="Email" value={<a href={`mailto:${contact.email}`} style={{ color: "var(--accent)", textDecoration: "none" }}>{contact.email}</a>} />
-          {contact.linkedin && <DetailRow label="LinkedIn" value={<a href={contact.linkedin} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>open profile <ExternalLink size={11} style={{ display: "inline", verticalAlign: -1 }} /></a>} />}
           {contact.sentAt && <DetailRow label="Sent" value={`${niceDate(new Date(contact.sentAt).toISOString())} · ${Math.floor((Date.now() - contact.sentAt) / 86400000)}d ago`} />}
           {contact.repliedAt && <DetailRow label="Replied" value={niceDate(new Date(contact.repliedAt).toISOString())} />}
         </div>
