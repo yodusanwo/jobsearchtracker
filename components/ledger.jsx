@@ -13,7 +13,7 @@ import {
   RefreshCw, ArrowRight, Camera, Upload, Download, Check, AlertCircle,
   MessageCircle, Image as ImageIcon, FileText,
   Home, TrendingUp, TrendingDown, Users, Activity, ChevronRight,
-  UserPlus, Edit3, Settings, Bell, CheckCircle2, LogOut, PenLine
+  UserPlus, Edit3, Settings, Bell, CheckCircle2, LogOut, PenLine, Table
 } from "lucide-react";
 
 function Linkedin({ size = 24, strokeWidth = 2, ...props }) {
@@ -516,6 +516,7 @@ export default function JobSearchTracker() {
               outreach: outreach.length,
               meetings: meetings.length,
               campaign: contacts.length,
+              contacts: contacts.length,
               companies: (() => {
                 const names = new Set();
                 companies.forEach((c) => c.name && names.add(c.name.toLowerCase().trim()));
@@ -559,6 +560,15 @@ export default function JobSearchTracker() {
             applications={applications}
             upsertApp={upsertApp}
             deleteApp={deleteApp}
+            upsertCompany={upsertCompany}
+            flash={flash}
+          />
+        )}
+        {tab === "contacts" && (
+          <ContactsSpreadsheetView
+            contacts={contacts}
+            upsertContact={upsertContact}
+            deleteContact={deleteContact}
             flash={flash}
           />
         )}
@@ -704,6 +714,7 @@ function Nav({ tab, setTab, counts }) {
     { id: "outreach", label: "Outreach", icon: Send, count: counts.outreach },
     { id: "activity", label: "Activity", icon: PenLine, count: counts.activity },
     { id: "campaign", label: "Campaign", icon: Users, count: counts.campaign },
+    { id: "contacts", label: "Contacts", icon: Table, count: counts.contacts },
     { id: "meetings", label: "Meetings", icon: Calendar, count: counts.meetings },
   ];
   return (
@@ -736,10 +747,205 @@ function Nav({ tab, setTab, counts }) {
 }
 
 /* ============================================================
+   REJECTION UPLOAD
+   ============================================================ */
+const REJECTION_PARSE_PROMPT = `Extract details from this job rejection email. Return ONLY valid JSON:
+{
+  "company": "company name",
+  "role": "job title if mentioned",
+  "date": "YYYY-MM-DD if found, else empty string",
+  "contact_name": "sender name if visible",
+  "contact_email": "sender email if visible",
+  "subject": "email subject line",
+  "message": "full rejection message text"
+}
+Empty string for unknown fields. JSON only.`;
+
+function RejectionUploadModal({ onClose, onSave, flash }) {
+  const [processing, setProcessing] = useState(false);
+  const [form, setForm] = useState(null);
+  const [pasteText, setPasteText] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
+
+  const analyzeBlocks = async (contentBlocks) => {
+    setProcessing(true);
+    try {
+      const { text } = await callAI({
+        system: "You extract structured data from job rejection emails. Return only valid JSON — no markdown.",
+        content: [...contentBlocks, { type: "text", text: REJECTION_PARSE_PROMPT }],
+        maxTokens: 2500,
+        feature: "rejection_parse",
+      });
+      const parsed = extractJSON(text);
+      if (!parsed) {
+        flash("Couldn't read the rejection — try pasting the full email text", "err");
+        return;
+      }
+      setForm({
+        company: parsed.company || "",
+        role: parsed.role || "",
+        date: parsed.date || todayISO(),
+        contact_name: parsed.contact_name || "",
+        contact_email: parsed.contact_email || "",
+        subject: parsed.subject || "",
+        message: parsed.message || "",
+      });
+    } catch (e) {
+      flash("Parse failed: " + e.message, "err");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const ingestFile = async (file) => {
+    if (!file) return;
+    const isImage = file.type.startsWith("image/");
+    const isPdf = file.type === "application/pdf";
+    const isEmailText = file.type.startsWith("text/") || /\.(eml|txt|html?)$/i.test(file.name);
+    try {
+      if (isImage || isPdf) {
+        const base64 = await fileToBase64(file);
+        await analyzeBlocks([
+          isPdf
+            ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+            : { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
+        ]);
+      } else if (isEmailText) {
+        const text = await file.text();
+        await analyzeBlocks([{ type: "text", text: `Rejection email (.eml or text):\n\n${text.slice(0, 20000)}` }]);
+      } else {
+        flash("Use .eml, .txt, PDF, or an image/screenshot", "err");
+      }
+    } catch {
+      flash("Couldn't read file", "err");
+    }
+  };
+
+  const analyzePaste = async () => {
+    if (!pasteText.trim()) return;
+    await analyzeBlocks([{ type: "text", text: `Rejection email:\n\n${pasteText.slice(0, 20000)}` }]);
+  };
+
+  const u = (k, v) => setForm({ ...form, [k]: v });
+
+  return (
+    <div style={drawerOverlay} onClick={onClose}>
+      <div className="jl-fade jl-scroll" onClick={(e) => e.stopPropagation()} style={{
+        position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+        width: "min(680px, 94vw)", maxHeight: "90vh", overflowY: "auto",
+        background: "var(--surface)", borderRadius: 14, padding: "26px 30px",
+        border: "1px solid var(--line)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h2 className="jl-display" style={{ fontSize: 22, fontWeight: 500, margin: 0 }}>
+            Upload rejection email
+          </h2>
+          <button onClick={onClose} style={iconBtn}><X size={18} /></button>
+        </div>
+        <p style={{ color: "var(--ink-3)", fontSize: 13, margin: "0 0 20px", lineHeight: 1.55 }}>
+          Drop a forwarded rejection (.eml), paste the email text, or upload a screenshot/PDF. I'll extract the company and role and add it to your pipeline as closed.
+        </p>
+
+        {!form ? (
+          <>
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer?.files?.[0]) ingestFile(e.dataTransfer.files[0]); }}
+              onClick={() => !processing && fileRef.current?.click()}
+              style={{
+                padding: "40px 24px", textAlign: "center", cursor: processing ? "wait" : "pointer",
+                border: `1.5px dashed ${dragOver ? "var(--rose)" : "var(--line)"}`,
+                borderRadius: 12, background: dragOver ? "var(--rose-soft)" : "var(--paper-deep)",
+                marginBottom: 16, opacity: processing ? 0.7 : 1,
+              }}>
+              {processing ? (
+                <>
+                  <RefreshCw size={28} className="jl-spin" style={{ color: "var(--rose)", marginBottom: 10 }} />
+                  <div className="jl-display" style={{ fontSize: 16, fontWeight: 500 }}>Reading rejection…</div>
+                </>
+              ) : (
+                <>
+                  <Upload size={28} style={{ color: "var(--rose)", marginBottom: 10 }} />
+                  <div className="jl-display" style={{ fontSize: 16, fontWeight: 500 }}>Drop file here</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>
+                    .eml · .txt · PDF · screenshot
+                  </div>
+                </>
+              )}
+              <input ref={fileRef} type="file" accept=".eml,.txt,text/*,image/*,application/pdf" style={{ display: "none" }}
+                onChange={(e) => { ingestFile(e.target.files?.[0]); e.target.value = ""; }} />
+            </div>
+            <Field label="Or paste email content">
+              <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} disabled={processing}
+                style={{ ...inputBase, minHeight: 140, resize: "vertical", fontSize: 13 }}
+                placeholder="Paste the full rejection email — headers and body…" />
+            </Field>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+              <button onClick={onClose} style={ghostBtn}>Cancel</button>
+              <button onClick={analyzePaste} disabled={!pasteText.trim() || processing}
+                style={{ ...primaryBtn, background: "var(--rose)", opacity: !pasteText.trim() || processing ? 0.5 : 1 }}>
+                {processing ? "Parsing…" : "Parse email"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{
+              padding: "10px 14px", background: "var(--rose-soft)", color: "var(--rose)",
+              fontSize: 13, borderRadius: 8, marginBottom: 16,
+            }}>
+              Review extracted details before saving to pipeline.
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Company" required>
+                  <input value={form.company} onChange={(e) => u("company", e.target.value)} style={inputBase} />
+                </Field>
+                <Field label="Role">
+                  <input value={form.role} onChange={(e) => u("role", e.target.value)} style={inputBase} />
+                </Field>
+              </div>
+              <Field label="Date received">
+                <input type="date" value={form.date} onChange={(e) => u("date", e.target.value)} style={inputBase} />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="From (name)">
+                  <input value={form.contact_name} onChange={(e) => u("contact_name", e.target.value)} style={inputBase} />
+                </Field>
+                <Field label="From (email)">
+                  <input value={form.contact_email} onChange={(e) => u("contact_email", e.target.value)} style={inputBase} placeholder="optional" />
+                </Field>
+              </div>
+              <Field label="Subject">
+                <input value={form.subject} onChange={(e) => u("subject", e.target.value)} style={inputBase} />
+              </Field>
+              <Field label="Message">
+                <textarea value={form.message} onChange={(e) => u("message", e.target.value)}
+                  style={{ ...inputBase, minHeight: 100, resize: "vertical" }} />
+              </Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+              <button onClick={() => setForm(null)} style={ghostBtn}>Back</button>
+              <button onClick={() => onSave(form)} disabled={!form.company.trim()}
+                style={{ ...primaryBtn, background: "var(--rose)", opacity: !form.company.trim() ? 0.5 : 1 }}>
+                Save to pipeline
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    PIPELINE
    ============================================================ */
-function Pipeline({ applications, upsertApp, deleteApp, flash }) {
+function Pipeline({ applications, upsertApp, deleteApp, upsertCompany, flash }) {
   const [adding, setAdding] = useState(false);
+  const [rejectionOpen, setRejectionOpen] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [pasteUrl, setPasteUrl] = useState("");
   const [selectedApp, setSelectedApp] = useState(null);
@@ -840,6 +1046,11 @@ Empty string for unknown fields. JSON only.`,
             <input value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="Filter…"
               style={{ ...inputBase, padding: "8px 12px 8px 32px", width: 180, fontSize: 13 }} />
           </div>
+          <button onClick={() => setRejectionOpen(true)} style={{
+            ...ghostBtn, color: "var(--rose)", borderColor: "var(--rose-soft)",
+          }}>
+            <Upload size={14} /> Log rejection
+          </button>
           <button onClick={() => setAdding(true)} style={primaryBtn}>
             <Plus size={15} /> Add a job
           </button>
@@ -847,7 +1058,7 @@ Empty string for unknown fields. JSON only.`,
       </div>
 
       {applications.length === 0 ? (
-        <EmptyPipeline onAdd={() => setAdding(true)} />
+        <EmptyPipeline onAdd={() => setAdding(true)} onRejection={() => setRejectionOpen(true)} />
       ) : (
         <div className="jl-scroll" style={{
           display: "grid", gridTemplateColumns: "repeat(6, minmax(220px, 1fr))",
@@ -898,6 +1109,35 @@ Empty string for unknown fields. JSON only.`,
             setSelectedApp({ ...selectedApp, ...d });
           }}
           onDelete={() => { deleteApp(selectedApp.id); setSelectedApp(null); flash("Deleted"); }} />
+      )}
+
+      {rejectionOpen && (
+        <RejectionUploadModal
+          onClose={() => setRejectionOpen(false)}
+          onSave={(form) => {
+            const notes = [
+              form.subject ? `Subject: ${form.subject}` : "",
+              form.contact_name || form.contact_email
+                ? `From: ${[form.contact_name, form.contact_email].filter(Boolean).join(" · ")}`
+                : "",
+              form.message,
+            ].filter(Boolean).join("\n\n");
+            upsertApp({
+              company: form.company.trim(),
+              role: form.role || "",
+              status: "closed",
+              dateSaved: form.date || todayISO(),
+              notes,
+              rejectionUploaded: true,
+            });
+            if (form.company.trim()) {
+              upsertCompany({ name: form.company.trim(), source: "rejection" });
+            }
+            setRejectionOpen(false);
+            flash(`Logged rejection — ${form.company}`);
+          }}
+          flash={flash}
+        />
       )}
     </div>
   );
@@ -968,7 +1208,7 @@ function Card({ app, onClick }) {
   );
 }
 
-function EmptyPipeline({ onAdd }) {
+function EmptyPipeline({ onAdd, onRejection }) {
   return (
     <div style={{
       padding: "80px 40px", textAlign: "center",
@@ -990,9 +1230,16 @@ function EmptyPipeline({ onAdd }) {
       }}>
         Paste a URL, screenshot a posting, or add by hand. Use <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Capture</strong> in the top right for screenshots of LinkedIn jobs, application confirmations, recruiter DMs — anything on screen.
       </p>
-      <button onClick={onAdd} style={primaryBtn}>
-        <Plus size={15} /> Add your first job
-      </button>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+        <button onClick={onAdd} style={primaryBtn}>
+          <Plus size={15} /> Add your first job
+        </button>
+        {onRejection && (
+          <button onClick={onRejection} style={{ ...ghostBtn, color: "var(--rose)", borderColor: "var(--rose-soft)" }}>
+            <Upload size={14} /> Log a rejection
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -2329,7 +2576,7 @@ When multiple screenshots show parts of the same thing, merge: combine message t
         location: d.location || "",
         salary: d.salary || "",
         jobType: d.jobType || "",
-        status: d.status_hint || (result.type === "application_confirmation" ? "applied" : "saved"),
+        status: d.status_hint || (result.type === "email_rejection" ? "closed" : result.type === "application_confirmation" ? "applied" : "saved"),
         dateSaved: todayISO(),
         dateApplied: result.type === "application_confirmation" ? todayISO() : undefined,
         notes: [result.summary, d.requirements?.length ? "Requirements:\n" + d.requirements.map(r => "• " + r).join("\n") : "", d.message ? `Message:\n${d.message}` : ""].filter(Boolean).join("\n\n"),
@@ -2526,7 +2773,10 @@ When multiple screenshots show parts of the same thing, merge: combine message t
 
 function CaptureResult({ result, images, onSave, onReset }) {
   const [destination, setDestination] = useState(result.destination || "pipeline");
-  const [data, setData] = useState(result.data || {});
+  const [data, setData] = useState(() => ({
+    ...(result.data || {}),
+    status_hint: result.data?.status_hint || (result.type === "email_rejection" ? "closed" : "saved"),
+  }));
   const update = (k, v) => setData({ ...data, [k]: v });
 
   const typeLabels = {
@@ -3357,6 +3607,189 @@ const CONTACT_STATUSES = [
   { id: "not_interested", label: "Closed", color: "var(--ink-4)" },
 ];
 const contactStatusMeta = (id) => CONTACT_STATUSES.find((s) => s.id === id) || CONTACT_STATUSES[0];
+
+const SPREADSHEET_CELL = {
+  ...inputBase,
+  border: "none",
+  borderRadius: 0,
+  padding: "7px 10px",
+  fontSize: 13,
+  background: "transparent",
+  minWidth: 0,
+};
+
+function exportContactsCSV(contacts) {
+  const headers = ["name", "email", "company", "role", "linkedin", "status", "notes"];
+  const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [
+    headers.join(","),
+    ...contacts.map((c) => headers.map((h) => escape(c[h])).join(",")),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `ledger-contacts-${todayISO()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ContactsSpreadsheetView({ contacts, upsertContact, deleteContact, flash }) {
+  const [filterText, setFilterText] = useState("");
+
+  const filtered = useMemo(() => {
+    if (!filterText.trim()) return contacts;
+    const q = filterText.toLowerCase();
+    return contacts.filter((c) =>
+      (c.name || "").toLowerCase().includes(q) ||
+      (c.email || "").toLowerCase().includes(q) ||
+      (c.company || "").toLowerCase().includes(q) ||
+      (c.role || "").toLowerCase().includes(q)
+    );
+  }, [contacts, filterText]);
+
+  const updateField = (contact, field, value) => {
+    upsertContact({ ...contact, [field]: value });
+  };
+
+  const addRow = () => {
+    upsertContact({ name: "", email: "", company: "", role: "", linkedin: "", notes: "", status: "new", source: "spreadsheet" });
+    flash("New row added — click a cell to edit");
+  };
+
+  const columns = [
+    { key: "name", label: "Name", width: 160 },
+    { key: "email", label: "Email", width: 220 },
+    { key: "company", label: "Company", width: 150 },
+    { key: "role", label: "Title / role", width: 150 },
+    { key: "linkedin", label: "LinkedIn", width: 180 },
+    { key: "status", label: "Status", width: 130 },
+    { key: "notes", label: "Notes", width: 200 },
+  ];
+
+  return (
+    <div className="jl-fade">
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 22, gap: 16, flexWrap: "wrap",
+      }}>
+        <div>
+          <h1 className="jl-display" style={{ fontSize: 38, fontWeight: 400, margin: 0, letterSpacing: "-0.02em" }}>
+            Contacts
+          </h1>
+          <p style={{ color: "var(--ink-3)", fontSize: 14, margin: "4px 0 0" }}>
+            {contacts.length === 0
+              ? "Your editable contact spreadsheet — add emails, names, and companies"
+              : `${contacts.length} ${contacts.length === 1 ? "contact" : "contacts"} · edits save automatically`}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ position: "relative" }}>
+            <Search size={14} style={{ position: "absolute", left: 12, top: 11, color: "var(--ink-4)" }} />
+            <input value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="Filter…"
+              style={{ ...inputBase, padding: "8px 12px 8px 32px", width: 180, fontSize: 13 }} />
+          </div>
+          {contacts.length > 0 && (
+            <button onClick={() => { exportContactsCSV(contacts); flash("Exported CSV"); }} style={ghostBtn}>
+              <Download size={14} /> Export CSV
+            </button>
+          )}
+          <button onClick={addRow} style={primaryBtn}>
+            <Plus size={15} /> Add row
+          </button>
+        </div>
+      </div>
+
+      {contacts.length === 0 ? (
+        <div style={{
+          padding: "60px 40px", textAlign: "center",
+          border: "1px dashed var(--line)", borderRadius: 16,
+          background: "var(--paper-deep)",
+        }}>
+          <Table size={32} strokeWidth={1.3} style={{ color: "var(--ink-4)", marginBottom: 16 }} />
+          <h3 className="jl-display" style={{ fontSize: 22, fontWeight: 400, margin: "0 0 8px" }}>
+            Start your contact list
+          </h3>
+          <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 440, margin: "0 auto 20px", lineHeight: 1.55 }}>
+            Add rows here and fill in email addresses as you find them. Same data powers Campaign outreach — or import a CSV from the Campaign tab.
+          </p>
+          <button onClick={addRow} style={primaryBtn}>
+            <Plus size={15} /> Add first contact
+          </button>
+        </div>
+      ) : (
+        <div className="jl-scroll" style={{
+          border: "1px solid var(--line)", borderRadius: 10,
+          overflow: "auto", background: "var(--surface)",
+        }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
+            <thead>
+              <tr style={{ background: "var(--paper-deep)", borderBottom: "1px solid var(--line)" }}>
+                {columns.map((col) => (
+                  <th key={col.key} style={{
+                    textAlign: "left", padding: "10px 10px", fontSize: 11,
+                    fontWeight: 600, color: "var(--ink-3)", textTransform: "uppercase",
+                    letterSpacing: "0.08em", width: col.width, minWidth: col.width,
+                    position: "sticky", top: 0, background: "var(--paper-deep)", zIndex: 1,
+                  }}>
+                    {col.label}
+                  </th>
+                ))}
+                <th style={{
+                  width: 44, minWidth: 44, position: "sticky", top: 0,
+                  background: "var(--paper-deep)", zIndex: 1,
+                }} />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={columns.length + 1} style={{ padding: 24, textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
+                    No matches for your filter.
+                  </td>
+                </tr>
+              ) : filtered.map((c) => (
+                <tr key={c.id} style={{ borderBottom: "1px solid var(--line-soft)" }}>
+                  {columns.map((col) => (
+                    <td key={col.key} style={{ padding: 0, verticalAlign: "middle" }}>
+                      {col.key === "status" ? (
+                        <select
+                          value={c.status || "new"}
+                          onChange={(e) => updateField(c, "status", e.target.value)}
+                          style={{ ...SPREADSHEET_CELL, cursor: "pointer" }}
+                        >
+                          {CONTACT_STATUSES.map((s) => (
+                            <option key={s.id} value={s.id}>{s.label}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={c[col.key] || ""}
+                          onChange={(e) => updateField(c, col.key, e.target.value)}
+                          placeholder={col.key === "email" ? "add email…" : ""}
+                          style={SPREADSHEET_CELL}
+                        />
+                      )}
+                    </td>
+                  ))}
+                  <td style={{ padding: "4px 8px", textAlign: "center" }}>
+                    <button
+                      onClick={() => { if (confirm(`Delete ${c.name || c.email || "this row"}?`)) { deleteContact(c.id); flash("Deleted"); } }}
+                      title="Delete row"
+                      style={{ ...iconBtn, width: 28, height: 28, border: "none", color: "var(--ink-4)" }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CampaignView({
   contacts, upsertContact, upsertContacts, deleteContact,
