@@ -22,9 +22,11 @@ Without this table, Gmail connect and scan will fail.
 
 1. Open [Google Cloud Console](https://console.cloud.google.com/)
 2. Create or select a project
-3. Enable APIs:
-   - **Gmail API** (`gmail.googleapis.com`)
-   - **Gmail MCP API** (`gmailmcp.googleapis.com`) — under Workspace Developer Preview if prompted
+3. Enable APIs (**both required**):
+   - **[Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com)** (`gmail.googleapis.com`) — **required** for Inbox summary (reads your last 10 emails)
+   - **Gmail MCP API** (`gmailmcp.googleapis.com`) — optional; only needed for MCP-based features
+
+   After enabling Gmail API, wait ~1 minute before retrying in Ledger.
 
 ## 3. OAuth consent screen (Testing mode)
 
@@ -88,10 +90,11 @@ No trailing slash on `NEXT_PUBLIC_SITE_URL`. Redeploy after changing Vercel env 
 2. Open **Inbox**
 3. Click **Connect Gmail**
 4. Approve scopes (you may see “Google hasn’t verified this app” — expected in Testing mode)
-5. Click **Scan Gmail**
+5. Click **Summarize inbox**
 
 ## Troubleshooting
 
+- **"Gmail API has not been used in project … or it is disabled"** — open [Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com) for your project, click **Enable**, wait a minute, then **Refresh summary** in Inbox. OAuth alone is not enough; the REST API must be enabled separately.
 - **No refresh token** — revoke Ledger at [Google Account permissions](https://myaccount.google.com/permissions) and connect again (`prompt=consent` is already set).
-- **403 / permission denied on search** — confirm Gmail MCP API is enabled and scopes include `gmail.readonly`.
+- **403 / permission denied** — confirm scopes include `gmail.readonly` on the OAuth consent screen.
 - **Connect button missing** — `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` not set or dev server not restarted.

@@ -1,3 +1,30 @@
+export type GmailApiErrorInfo = {
+  code: string;
+  message: string;
+  enableUrl?: string;
+};
+
+export function parseGmailApiError(raw: string): GmailApiErrorInfo | null {
+  if (
+    !raw.includes("Gmail API has not been used") &&
+    !raw.includes("gmail.googleapis.com") &&
+    !raw.includes("accessNotConfigured")
+  ) {
+    return null;
+  }
+  const projectMatch = raw.match(/project[= ](\d+)/i);
+  const project = projectMatch?.[1];
+  const enableUrl = project
+    ? `https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=${project}`
+    : "https://console.cloud.google.com/apis/library/gmail.googleapis.com";
+  return {
+    code: "gmail_api_disabled",
+    message:
+      "The Gmail API is not enabled for your Google Cloud project. Enable it, wait ~1 minute, then click Refresh summary.",
+    enableUrl,
+  };
+}
+
 export type RecentEmail = {
   id: string;
   threadId: string;

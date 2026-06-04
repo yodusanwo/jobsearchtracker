@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { getGmailAccessToken } from "@/lib/google/tokens";
-import { fetchRecentEmails } from "@/lib/google/gmail";
+import { fetchRecentEmails, parseGmailApiError } from "@/lib/google/gmail";
 
 export async function GET(req: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -50,6 +50,13 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     const message = e instanceof Error ? e.message : "Gmail fetch failed";
     console.error("Gmail recent fetch failed:", message);
+    const parsed = parseGmailApiError(message);
+    if (parsed) {
+      return NextResponse.json(
+        { error: parsed.message, code: parsed.code, enableUrl: parsed.enableUrl },
+        { status: 503 }
+      );
+    }
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

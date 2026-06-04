@@ -1565,6 +1565,7 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     loading: true, configured: false, connected: false, email: null, storageReady: true, setupRequired: false,
   });
   const [oauthRedirectUri, setOauthRedirectUri] = useState(null);
+  const [gmailApiError, setGmailApiError] = useState(null);
 
   useEffect(() => {
     fetch("/api/google/setup")
@@ -1664,6 +1665,7 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
       return;
     }
     setSummarizing(true);
+    setGmailApiError(null);
     try {
       const recentRes = await fetch("/api/google/recent?limit=10");
       const recentData = await recentRes.json().catch(() => ({}));
@@ -1675,6 +1677,11 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
       if (recentRes.status === 503 && recentData.code === "gmail_storage_not_ready") {
         flash("Run user_integrations SQL in Supabase, then Connect Gmail again", "err");
         refreshGmailStatus();
+        return;
+      }
+      if (recentRes.status === 503 && recentData.code === "gmail_api_disabled") {
+        setGmailApiError({ message: recentData.error, enableUrl: recentData.enableUrl });
+        flash("Enable Gmail API in Google Cloud (see banner below)", "err");
         return;
       }
       if (!recentRes.ok) {
@@ -1845,6 +1852,26 @@ Rules:
           </button>
         </div>
       </div>
+
+      {gmailApiError && (
+        <div style={{
+          padding: "14px 16px", marginBottom: 20, borderRadius: 10,
+          background: "var(--rose-soft)", border: "1px solid var(--rose)",
+          fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55,
+        }}>
+          <strong style={{ fontWeight: 600, color: "var(--rose)" }}>Gmail API not enabled.</strong>{" "}
+          {gmailApiError.message}
+          {gmailApiError.enableUrl && (
+            <div style={{ marginTop: 10 }}>
+              <a href={gmailApiError.enableUrl} target="_blank" rel="noreferrer" style={{
+                ...primaryBtn, display: "inline-flex", textDecoration: "none", background: "var(--rose)", fontSize: 13,
+              }}>
+                <ExternalLink size={14} /> Enable Gmail API in Google Cloud
+              </a>
+            </div>
+          )}
+        </div>
+      )}
 
       {!gmailStatus.loading && gmailStatus.setupRequired && (
         <div style={{
