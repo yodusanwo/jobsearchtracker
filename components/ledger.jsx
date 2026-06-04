@@ -13,7 +13,7 @@ import {
   RefreshCw, ArrowRight, Camera, Upload, Download, Check, AlertCircle,
   MessageCircle, Image as ImageIcon, FileText,
   Home, TrendingUp, TrendingDown, Users, Activity, ChevronRight,
-  UserPlus, Edit3, Settings, Bell, CheckCircle2, LogOut
+  UserPlus, Edit3, Settings, Bell, CheckCircle2, LogOut, PenLine
 } from "lucide-react";
 
 function Linkedin({ size = 24, strokeWidth = 2, ...props }) {
@@ -107,6 +107,7 @@ const STORAGE_KEYS = {
   campaignSettings: "campaignSettings",
   companies: "companies",
   briefing: "briefing",
+  activities: "activities",
 };
 
 async function loadKey(key, fallback) {
@@ -232,6 +233,7 @@ export default function JobSearchTracker() {
   const [meetings, setMeetings] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [companies, setCompanies] = useState([]);
+  const [activities, setActivities] = useState([]);
   const [campaignSettings, setCampaignSettings] = useState({
     userName: "",
     userBackground: "",
@@ -252,19 +254,21 @@ export default function JobSearchTracker() {
     setLoaded(false);
     setStorageUserId(user?.id ?? null);
     (async () => {
-      const [apps, out, meets, cts, set, cos] = await Promise.all([
+      const [apps, out, meets, cts, set, cos, acts] = await Promise.all([
         loadKey(STORAGE_KEYS.applications, []),
         loadKey(STORAGE_KEYS.outreach, []),
         loadKey(STORAGE_KEYS.meetings, []),
         loadKey(STORAGE_KEYS.contacts, []),
         loadKey(STORAGE_KEYS.campaignSettings, null),
         loadKey(STORAGE_KEYS.companies, []),
+        loadKey(STORAGE_KEYS.activities, []),
       ]);
       setApplications(apps);
       setOutreach(out);
       setMeetings(meets);
       setContacts(cts);
       setCompanies(cos);
+      setActivities(acts);
       if (set) setCampaignSettings((prev) => ({ ...prev, ...set }));
       setLoaded(true);
     })();
@@ -410,6 +414,25 @@ export default function JobSearchTracker() {
     });
   }, []);
 
+  const upsertActivity = useCallback((item) => {
+    setActivities((prev) => {
+      const exists = prev.find((p) => p.id === item.id);
+      const next = exists
+        ? prev.map((p) => p.id === item.id ? { ...p, ...item, updatedAt: Date.now() } : p)
+        : [{ ...item, id: item.id || uid(), category: item.category ?? null, createdAt: Date.now(), updatedAt: Date.now() }, ...prev];
+      saveKey(STORAGE_KEYS.activities, next);
+      return next;
+    });
+  }, []);
+
+  const deleteActivity = useCallback((id) => {
+    setActivities((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      saveKey(STORAGE_KEYS.activities, next);
+      return next;
+    });
+  }, []);
+
   if (!loaded) {
     return (
       <div className="jl" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
@@ -453,6 +476,7 @@ export default function JobSearchTracker() {
                 contacts.forEach((c) => c.company && names.add(c.company.toLowerCase().trim()));
                 return names.size;
               })(),
+              activity: activities.length,
             }} />
             {configured && user && (
               <>
@@ -478,6 +502,7 @@ export default function JobSearchTracker() {
             outreach={outreach}
             meetings={meetings}
             contacts={contacts}
+            activities={activities}
             settings={campaignSettings}
             setTab={setTab}
           />
@@ -529,6 +554,14 @@ export default function JobSearchTracker() {
             outreach={outreach}
             upsertOutreach={upsertOutreach}
             deleteOutreach={deleteOutreach}
+            flash={flash}
+          />
+        )}
+        {tab === "activity" && (
+          <ActivityView
+            activities={activities}
+            upsertActivity={upsertActivity}
+            deleteActivity={deleteActivity}
             flash={flash}
           />
         )}
@@ -618,6 +651,7 @@ function Nav({ tab, setTab, counts }) {
     { id: "companies", label: "Companies", icon: Briefcase, count: counts.companies },
     { id: "inbox", label: "Inbox", icon: Inbox },
     { id: "outreach", label: "Outreach", icon: Send, count: counts.outreach },
+    { id: "activity", label: "Activity", icon: PenLine, count: counts.activity },
     { id: "campaign", label: "Campaign", icon: Users, count: counts.campaign },
     { id: "meetings", label: "Meetings", icon: Calendar, count: counts.meetings },
   ];
@@ -1505,6 +1539,227 @@ function ManualOutreachForm({ onSave, onCancel }) {
         <button onClick={() => form.contact && onSave(form)}
           disabled={!form.contact} style={{ ...primaryBtn, opacity: !form.contact ? 0.5 : 1 }}>
           Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ACTIVITY — unstructured log
+   ============================================================ */
+function ActivityView({ activities, upsertActivity, deleteActivity, flash }) {
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [filterText, setFilterText] = useState("");
+
+  const sorted = useMemo(() => {
+    let list = [...activities];
+    if (filterText.trim()) {
+      const q = filterText.toLowerCase();
+      list = list.filter((a) =>
+        (a.title || "").toLowerCase().includes(q) ||
+        (a.notes || "").toLowerCase().includes(q)
+      );
+    }
+    return list.sort((a, b) => {
+      const da = new Date(a.date || a.createdAt || 0).getTime();
+      const db = new Date(b.date || b.createdAt || 0).getTime();
+      return db - da;
+    });
+  }, [activities, filterText]);
+
+  const save = (form) => {
+    upsertActivity(form);
+    setAdding(false);
+    setEditing(null);
+    flash(editing ? "Activity updated" : "Activity logged");
+  };
+
+  return (
+    <div className="jl-fade">
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 28, gap: 16, flexWrap: "wrap",
+      }}>
+        <div>
+          <h1 className="jl-display" style={{ fontSize: 38, fontWeight: 400, margin: 0, letterSpacing: "-0.02em" }}>
+            Activity
+          </h1>
+          <p style={{ color: "var(--ink-3)", fontSize: 14, margin: "4px 0 0", maxWidth: 520, lineHeight: 1.5 }}>
+            {activities.length === 0
+              ? "Log anything that doesn't fit a job, message, or meeting yet"
+              : `${activities.length} ${activities.length === 1 ? "entry" : "entries"} · uncategorized for now`}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {activities.length > 0 && (
+            <div style={{ position: "relative" }}>
+              <Search size={14} style={{ position: "absolute", left: 12, top: 11, color: "var(--ink-4)" }} />
+              <input value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="Search…"
+                style={{ ...inputBase, padding: "8px 12px 8px 32px", width: 180, fontSize: 13 }} />
+            </div>
+          )}
+          <button onClick={() => { setEditing(null); setAdding(true); }} style={primaryBtn}>
+            <Plus size={15} /> Log activity
+          </button>
+        </div>
+      </div>
+
+      {activities.length === 0 ? (
+        <div style={{
+          padding: "60px 40px", textAlign: "center",
+          border: "1px dashed var(--line)", borderRadius: 16,
+          background: "var(--paper-deep)",
+        }}>
+          <PenLine size={32} strokeWidth={1.3} style={{ color: "var(--ink-4)", marginBottom: 16 }} />
+          <h3 className="jl-display" style={{ fontSize: 22, fontWeight: 400, margin: "0 0 8px" }}>
+            Capture the in-between work
+          </h3>
+          <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 440, margin: "0 auto 20px", lineHeight: 1.55 }}>
+            Created a profile on a job board? Joined a community? Researched a company? Log it here — you can categorize later.
+          </p>
+          <button onClick={() => setAdding(true)} style={{ ...primaryBtn, background: "var(--accent)", color: "white" }}>
+            <Plus size={15} /> Log your first activity
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {sorted.map((item) => (
+            <ActivityCard
+              key={item.id}
+              item={item}
+              onEdit={() => { setAdding(false); setEditing(item); }}
+              onDelete={() => { deleteActivity(item.id); flash("Deleted"); }}
+            />
+          ))}
+          {sorted.length === 0 && filterText && (
+            <p style={{ color: "var(--ink-3)", fontSize: 14, textAlign: "center", padding: 24 }}>
+              No entries match "{filterText}"
+            </p>
+          )}
+        </div>
+      )}
+
+      {(adding || editing) && (
+        <div style={drawerOverlay} onClick={() => { setAdding(false); setEditing(null); }}>
+          <div className="jl-fade jl-scroll" onClick={(e) => e.stopPropagation()} style={{
+            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+            width: "min(560px, 94vw)", maxHeight: "90vh", overflowY: "auto",
+            background: "var(--surface)", borderRadius: 14, padding: "26px 30px",
+            border: "1px solid var(--line)",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h2 className="jl-display" style={{ fontSize: 22, fontWeight: 500, margin: 0 }}>
+                {editing ? "Edit activity" : "Log activity"}
+              </h2>
+              <button onClick={() => { setAdding(false); setEditing(null); }} style={iconBtn}><X size={18} /></button>
+            </div>
+            <p style={{ color: "var(--ink-3)", fontSize: 13, margin: "0 0 18px", lineHeight: 1.5 }}>
+              Free-form notes about something you did. No category required — organize later if you want.
+            </p>
+            <ActivityForm
+              initial={editing}
+              onSave={save}
+              onCancel={() => { setAdding(false); setEditing(null); }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityCard({ item, onEdit, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = (item.notes || "").split("\n")[0].slice(0, 120);
+  return (
+    <div style={{
+      background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 12,
+      padding: "14px 16px",
+    }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer" }}
+        onClick={() => setExpanded(!expanded)}>
+        <div style={{
+          width: 32, height: 32, borderRadius: 8, background: "var(--paper-deep)",
+          display: "grid", placeItems: "center", color: "var(--ink-2)", flexShrink: 0,
+        }}>
+          <PenLine size={15} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 500, color: "var(--ink)", marginBottom: 4 }}>
+            {item.title || "Untitled activity"}
+          </div>
+          {!expanded && item.notes && (
+            <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.45 }}>
+              {preview}{item.notes.length > preview.length ? "…" : ""}
+            </div>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--ink-3)", flexShrink: 0 }}>
+          {niceDate(item.date || item.createdAt)}
+        </div>
+      </div>
+      {expanded && (
+        <div style={{
+          marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--line-soft)",
+          fontSize: 13, color: "var(--ink-2)", lineHeight: 1.65, whiteSpace: "pre-wrap",
+        }}>
+          {item.notes || <em style={{ color: "var(--ink-4)" }}>No details added</em>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} style={ghostBtnSm}>
+              <Edit3 size={12} /> Edit
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); if (confirm("Delete this entry?")) onDelete(); }} style={{
+              ...ghostBtnSm, color: "var(--rose)",
+            }}>
+              <Trash2 size={12} /> Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityForm({ initial, onSave, onCancel }) {
+  const [form, setForm] = useState({
+    id: initial?.id,
+    title: initial?.title || "",
+    notes: initial?.notes || "",
+    date: initial?.date || todayISO(),
+    category: initial?.category ?? null,
+  });
+  const u = (k, v) => setForm({ ...form, [k]: v });
+  const canSave = form.title.trim() || form.notes.trim();
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Field label="What did you do?" required>
+        <input
+          value={form.title}
+          onChange={(e) => u("title", e.target.value)}
+          style={inputBase}
+          placeholder="Created a profile on Wellfound"
+          autoFocus
+        />
+      </Field>
+      <Field label="Date">
+        <input type="date" value={form.date} onChange={(e) => u("date", e.target.value)} style={inputBase} />
+      </Field>
+      <Field label="Details">
+        <textarea
+          value={form.notes}
+          onChange={(e) => u("notes", e.target.value)}
+          style={{ ...inputBase, minHeight: 140, resize: "vertical" }}
+          placeholder="What is this site? Why did you sign up? Anything to remember for later…"
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
+        <button onClick={() => canSave && onSave(form)}
+          disabled={!canSave} style={{ ...primaryBtn, opacity: !canSave ? 0.5 : 1 }}>
+          <Check size={15} /> {initial ? "Save changes" : "Log activity"}
         </button>
       </div>
     </div>
@@ -4176,7 +4431,7 @@ function BackupModal({ onClose, flash }) {
           <div style={{ padding: 16, borderRadius: 10, background: "var(--paper-deep)", border: "1px solid var(--line-soft)" }}>
             <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 14 }}>Export</div>
             <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-3)" }}>
-              Saves jobs, outreach, meetings, contacts, companies, profile, inbox scan state, and briefing.
+              Saves jobs, outreach, meetings, contacts, companies, activity log, profile, inbox scan state, and briefing.
             </p>
             <button onClick={exportNow} disabled={exporting} style={primaryBtn}>
               <Download size={15} /> {exporting ? "Exporting…" : "Download backup"}
@@ -4194,7 +4449,7 @@ function BackupModal({ onClose, flash }) {
             {s && (
               <div style={{ marginTop: 14, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>
                 <div>Exported {niceDate(s.exportedAt)}</div>
-                <div>{s.applications} jobs · {s.outreach} outreach · {s.meetings} meetings · {s.contacts} contacts · {s.companies} companies</div>
+                <div>{s.applications} jobs · {s.outreach} outreach · {s.meetings} meetings · {s.contacts} contacts · {s.companies} companies · {s.activities} activity</div>
                 <button onClick={restoreNow} disabled={restoring}
                   style={{ ...primaryBtn, marginTop: 12, background: "var(--accent)", color: "white" }}>
                   {restoring ? "Restoring…" : "Restore backup"}
@@ -4287,7 +4542,7 @@ function CampaignSettingsModal({ settings, updateSettings, onClose, onSave }) {
 /* ============================================================
    DASHBOARD
    ============================================================ */
-function Dashboard({ applications, outreach, meetings, contacts = [], settings = {}, setTab }) {
+function Dashboard({ applications, outreach, meetings, contacts = [], activities = [], settings = {}, setTab }) {
   const [period, setPeriod] = useState("week"); // "week" | "month" | "all"
 
   const periodMeta = {
@@ -4395,6 +4650,18 @@ function Dashboard({ applications, outreach, meetings, contacts = [], settings =
         });
       }
     });
+    activities.forEach((a) => {
+      const t = tsOf(a.date) || a.createdAt || 0;
+      if (t > 0) {
+        activity.push({
+          kind: "activity_log",
+          ts: t,
+          title: a.title || "Activity",
+          subtitle: (a.notes || "").split("\n")[0].slice(0, 60) || "",
+          onClick: () => setTab("activity"),
+        });
+      }
+    });
     const recentSorted = activity
       .sort((a, b) => b.ts - a.ts)
       .slice(0, 7);
@@ -4409,9 +4676,9 @@ function Dashboard({ applications, outreach, meetings, contacts = [], settings =
       recent: recentSorted,
       byStatus: { counts, total: totalApps },
     };
-  }, [applications, outreach, meetings, period, setTab]);
+  }, [applications, outreach, meetings, activities, period, setTab]);
 
-  const isEmpty = applications.length === 0 && outreach.length === 0 && meetings.length === 0;
+  const isEmpty = applications.length === 0 && outreach.length === 0 && meetings.length === 0 && activities.length === 0;
 
   return (
     <div className="jl-fade">
@@ -4653,6 +4920,7 @@ function RecentActivity({ recent }) {
     outreach_out: { icon: Send, color: "var(--amber)", bg: "var(--amber-soft)", verb: "Sent message to" },
     outreach_in: { icon: Mail, color: "var(--moss)", bg: "var(--moss-soft)", verb: "Heard from" },
     meeting: { icon: Calendar, color: "var(--rose)", bg: "var(--rose-soft)", verb: "Meeting with" },
+    activity_log: { icon: PenLine, color: "var(--ink-2)", bg: "var(--paper-deep)", verb: "Logged" },
   };
 
   const relTime = (ts) => {
@@ -4736,6 +5004,7 @@ function RecentActivity({ recent }) {
 function DashboardEmpty({ setTab }) {
   const actions = [
     { id: "pipeline", label: "Add your first job", icon: Briefcase, hint: "Paste a URL, screenshot a posting, or fill it in" },
+    { id: "activity", label: "Log an activity", icon: PenLine, hint: "Profile on a job board, research, anything uncategorized" },
     { id: "outreach", label: "Log outreach", icon: Send, hint: "Record LinkedIn DMs, emails, every conversation" },
     { id: "meetings", label: "Track a meeting", icon: Calendar, hint: "Sync from Calendar or add interviews by hand" },
     { id: "inbox", label: "Scan your Gmail", icon: Inbox, hint: "Let AI find recruiter messages and offers" },
@@ -6094,6 +6363,7 @@ function HelpModal({ onClose, setTab }) {
             <li><Link tab="companies">Companies</Link> — every company you've engaged with, aggregated and starrable. Use this to keep a focused list.</li>
             <li><Link tab="inbox">Inbox</Link> — AI scans your Gmail for job-search activity and surfaces it as cards you can route anywhere.</li>
             <li><Link tab="outreach">Outreach</Link> — every message sent and received, threaded by contact and channel.</li>
+            <li><Link tab="activity">Activity</Link> — free-form log for anything else: profiles you created, sites you joined, research notes. Categorize later.</li>
             <li><Link tab="campaign">Campaign</Link> — import a contact list, let AI research each person, draft 5 personalized emails a day.</li>
             <li><Link tab="meetings">Meetings</Link> — interviews and chats, synced from Google Calendar, auto-linked to your contacts.</li>
           </ul>
