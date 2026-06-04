@@ -12,6 +12,7 @@ export const BACKUP_KEYS = [
   "companies",
   "briefing",
   "activities",
+  "resume",
 ] as const;
 
 export type BackupKey = (typeof BACKUP_KEYS)[number];
@@ -96,6 +97,7 @@ export function summarizeBackup(backup: LedgerBackup) {
     contacts: count("contacts"),
     companies: count("companies"),
     activities: count("activities"),
+    hasResume: !!d.resume,
     hasProfile: !!d.campaignSettings,
     hasInbox: !!d.inboxState,
     hasBriefing: !!d.briefing,

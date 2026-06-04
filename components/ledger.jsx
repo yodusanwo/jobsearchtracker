@@ -108,6 +108,7 @@ const STORAGE_KEYS = {
   companies: "companies",
   briefing: "briefing",
   activities: "activities",
+  resume: "resume",
 };
 
 async function loadKey(key, fallback) {
@@ -200,6 +201,28 @@ function fileToBase64(file) {
   });
 }
 
+const MAX_RESUME_BYTES = 2 * 1024 * 1024;
+const RESUME_ACCEPT = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function downloadResumeFile(resume) {
+  if (!resume?.data) return;
+  const mime = resume.mimeType || "application/octet-stream";
+  const blob = Uint8Array.from(atob(resume.data), (c) => c.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([blob], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = resume.fileName || "resume";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /* ============================================================
    STATUSES
    ============================================================ */
@@ -248,13 +271,14 @@ export default function JobSearchTracker() {
   const [shotOpen, setShotOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
+  const [resume, setResume] = useState(null);
 
   useEffect(() => {
     if (configured && authLoading) return;
     setLoaded(false);
     setStorageUserId(user?.id ?? null);
     (async () => {
-      const [apps, out, meets, cts, set, cos, acts] = await Promise.all([
+      const [apps, out, meets, cts, set, cos, acts, res] = await Promise.all([
         loadKey(STORAGE_KEYS.applications, []),
         loadKey(STORAGE_KEYS.outreach, []),
         loadKey(STORAGE_KEYS.meetings, []),
@@ -262,6 +286,7 @@ export default function JobSearchTracker() {
         loadKey(STORAGE_KEYS.campaignSettings, null),
         loadKey(STORAGE_KEYS.companies, []),
         loadKey(STORAGE_KEYS.activities, []),
+        loadKey(STORAGE_KEYS.resume, null),
       ]);
       setApplications(apps);
       setOutreach(out);
@@ -269,6 +294,7 @@ export default function JobSearchTracker() {
       setContacts(cts);
       setCompanies(cos);
       setActivities(acts);
+      setResume(res);
       if (set) setCampaignSettings((prev) => ({ ...prev, ...set }));
       setLoaded(true);
     })();
@@ -433,6 +459,27 @@ export default function JobSearchTracker() {
     });
   }, []);
 
+  const saveResume = useCallback(async (file) => {
+    if (file.size > MAX_RESUME_BYTES) {
+      throw new Error(`File too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_RESUME_BYTES)}.`);
+    }
+    const data = await fileToBase64(file);
+    const next = {
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      data,
+      uploadedAt: Date.now(),
+    };
+    await saveKey(STORAGE_KEYS.resume, next);
+    setResume(next);
+  }, []);
+
+  const removeResume = useCallback(async () => {
+    try { await storage.delete(STORAGE_KEYS.resume); } catch {}
+    setResume(null);
+  }, []);
+
   if (!loaded) {
     return (
       <div className="jl" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
@@ -536,6 +583,9 @@ export default function JobSearchTracker() {
             upsertOutreach={upsertOutreach}
             settings={campaignSettings}
             updateSettings={updateSettings}
+            resume={resume}
+            saveResume={saveResume}
+            removeResume={removeResume}
             flash={flash}
           />
         )}
@@ -1392,6 +1442,7 @@ function FindingCard({ f, matchedContact, onPipeline, onOutreach, onMarkReplied,
    ============================================================ */
 function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null);
   return (
     <div className="jl-fade">
       <div style={{
@@ -1427,7 +1478,14 @@ function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {outreach.map((o) => <OutreachRow key={o.id} item={o} onDelete={() => deleteOutreach(o.id)} onUpdate={(d) => upsertOutreach({ ...o, ...d })} />)}
+          {outreach.map((o) => (
+            <OutreachRow
+              key={o.id}
+              item={o}
+              onDelete={() => deleteOutreach(o.id)}
+              onEdit={() => { setAdding(false); setEditing(o); }}
+            />
+          ))}
         </div>
       )}
 
@@ -1440,11 +1498,25 @@ function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
           }} onCancel={() => setAdding(false)} />
         </Modal>
       )}
+
+      {editing && (
+        <Modal onClose={() => setEditing(null)} title="Edit message">
+          <ManualOutreachForm
+            initial={editing}
+            onSave={(d) => {
+              upsertOutreach({ ...editing, ...d });
+              setEditing(null);
+              flash("Updated");
+            }}
+            onCancel={() => setEditing(null)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
 
-function OutreachRow({ item, onDelete, onUpdate }) {
+function OutreachRow({ item, onDelete, onEdit }) {
   const [expanded, setExpanded] = useState(false);
   const channelIcon = item.channel === "LinkedIn" ? Linkedin : item.channel === "Gmail" ? Mail : MessageCircle;
   const Ch = channelIcon;
@@ -1464,6 +1536,7 @@ function OutreachRow({ item, onDelete, onUpdate }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, flexWrap: "wrap" }}>
             <span style={{ fontSize: 14, color: "var(--ink)", fontWeight: 500 }}>{item.contact || "Unknown"}</span>
+            {item.contactTitle && <span style={{ fontSize: 12, color: "var(--ink-3)" }}>· {item.contactTitle}</span>}
             {item.company && <span style={{ fontSize: 12, color: "var(--ink-3)" }}>· {item.company}</span>}
             <span style={{
               fontSize: 10, padding: "1px 7px", borderRadius: 999,
@@ -1485,7 +1558,10 @@ function OutreachRow({ item, onDelete, onUpdate }) {
         }}>
           {item.notes || <em style={{ color: "var(--ink-4)" }}>No content captured</em>}
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-            <button onClick={() => { if (confirm("Delete this?")) onDelete(); }} style={{
+            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} style={ghostBtnSm}>
+              <Edit3 size={12} /> Edit
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); if (confirm("Delete this?")) onDelete(); }} style={{
               ...ghostBtnSm, color: "var(--rose)",
             }}>
               <Trash2 size={12} /> Delete
@@ -1497,10 +1573,16 @@ function OutreachRow({ item, onDelete, onUpdate }) {
   );
 }
 
-function ManualOutreachForm({ onSave, onCancel }) {
+function ManualOutreachForm({ onSave, onCancel, initial }) {
   const [form, setForm] = useState({
-    channel: "LinkedIn", contact: "", company: "", subject: "",
-    direction: "outbound", date: todayISO(), notes: "",
+    channel: initial?.channel || "LinkedIn",
+    contact: initial?.contact || "",
+    contactTitle: initial?.contactTitle || "",
+    company: initial?.company || "",
+    subject: initial?.subject || "",
+    direction: initial?.direction || "outbound",
+    date: initial?.date || todayISO(),
+    notes: initial?.notes || "",
   });
   const u = (k, v) => setForm({ ...form, [k]: v });
   return (
@@ -1523,6 +1605,10 @@ function ManualOutreachForm({ onSave, onCancel }) {
       <Field label="Contact name" required>
         <input value={form.contact} onChange={(e) => u("contact", e.target.value)} style={inputBase} />
       </Field>
+      <Field label="Title">
+        <input value={form.contactTitle} onChange={(e) => u("contactTitle", e.target.value)} style={inputBase}
+          placeholder="e.g. Head of Talent, Recruiter" />
+      </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Company"><input value={form.company} onChange={(e) => u("company", e.target.value)} style={inputBase} /></Field>
         <Field label="Date"><input type="date" value={form.date} onChange={(e) => u("date", e.target.value)} style={inputBase} /></Field>
@@ -1536,9 +1622,9 @@ function ManualOutreachForm({ onSave, onCancel }) {
       </Field>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
         <button onClick={onCancel} style={ghostBtn}>Cancel</button>
-        <button onClick={() => form.contact && onSave(form)}
+        <button onClick={() => form.contact && onSave({ ...form, ...(initial?.id ? { id: initial.id } : {}) })}
           disabled={!form.contact} style={{ ...primaryBtn, opacity: !form.contact ? 0.5 : 1 }}>
-          Save
+          {initial?.id ? "Save changes" : "Save"}
         </button>
       </div>
     </div>
@@ -2244,6 +2330,7 @@ When multiple screenshots show parts of the same thing, merge: combine message t
       onSaveOutreach({
         channel: result.type === "linkedin_message" ? "LinkedIn" : "Gmail",
         contact: d.contact_name || "Unknown",
+        contactTitle: d.contact_title || "",
         company: d.company || "",
         subject: d.subject || result.summary || "",
         direction: d.direction || "outbound",
@@ -3265,7 +3352,8 @@ const contactStatusMeta = (id) => CONTACT_STATUSES.find((s) => s.id === id) || C
 
 function CampaignView({
   contacts, upsertContact, upsertContacts, deleteContact,
-  upsertOutreach, settings, updateSettings, flash
+  upsertOutreach, settings, updateSettings, flash,
+  resume, saveResume, removeResume,
 }) {
   const [view, setView] = useState("queue"); // "queue" | "all" | "followups" | "linkedin"
   const [importOpen, setImportOpen] = useState(false);
@@ -3429,6 +3517,10 @@ function CampaignView({
         <CampaignSettingsModal
           settings={settings}
           updateSettings={updateSettings}
+          resume={resume}
+          saveResume={saveResume}
+          removeResume={removeResume}
+          flash={flash}
           onClose={() => setSettingsOpen(false)}
           onSave={() => { setSettingsOpen(false); flash("Settings saved"); }}
         />
@@ -3818,6 +3910,7 @@ After creating the draft, return the draft ID and thread ID in JSON: {"draft_id"
       upsertOutreach({
         channel: "Gmail",
         contact: contact.name || contact.email,
+        contactTitle: contact.role || "",
         contactEmail: contact.email,
         company: contact.company || "",
         subject,
@@ -4431,7 +4524,7 @@ function BackupModal({ onClose, flash }) {
           <div style={{ padding: 16, borderRadius: 10, background: "var(--paper-deep)", border: "1px solid var(--line-soft)" }}>
             <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 14 }}>Export</div>
             <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-3)" }}>
-              Saves jobs, outreach, meetings, contacts, companies, activity log, profile, inbox scan state, and briefing.
+              Saves jobs, outreach, meetings, contacts, companies, activity log, resume, profile, inbox scan state, and briefing.
             </p>
             <button onClick={exportNow} disabled={exporting} style={primaryBtn}>
               <Download size={15} /> {exporting ? "Exporting…" : "Download backup"}
@@ -4467,13 +4560,36 @@ function BackupModal({ onClose, flash }) {
 }
 
 /* ----- Campaign settings modal ----- */
-function CampaignSettingsModal({ settings, updateSettings, onClose, onSave }) {
+function CampaignSettingsModal({ settings, updateSettings, resume, saveResume, removeResume, flash, onClose, onSave }) {
   const [local, setLocal] = useState(settings);
+  const [uploading, setUploading] = useState(false);
+  const resumeRef = useRef(null);
   const u = (k, v) => setLocal({ ...local, [k]: v });
   const save = () => {
     updateSettings(local);
     onSave();
   };
+
+  const handleResumePick = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      await saveResume(file);
+      flash("Resume uploaded");
+    } catch (e) {
+      flash(e.message || "Upload failed", "err");
+    } finally {
+      setUploading(false);
+      if (resumeRef.current) resumeRef.current.value = "";
+    }
+  };
+
+  const handleRemoveResume = async () => {
+    if (!confirm("Remove your uploaded resume?")) return;
+    await removeResume();
+    flash("Resume removed");
+  };
+
   return (
     <div style={drawerOverlay} onClick={onClose}>
       <div className="jl-fade jl-scroll" onClick={(e) => e.stopPropagation()} style={{
@@ -4504,6 +4620,46 @@ function CampaignSettingsModal({ settings, updateSettings, onClose, onSave }) {
               style={{ ...inputBase, minHeight: 70, resize: "vertical" }}
               placeholder="Founder of ZORA Digital, 10 years in brand and digital strategy, recently led..." />
           </Field>
+
+          <Field label="Resume">
+            <input ref={resumeRef} type="file" accept={RESUME_ACCEPT} style={{ display: "none" }}
+              onChange={(e) => handleResumePick(e.target.files?.[0])} />
+            {resume ? (
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                padding: "12px 14px", borderRadius: 8, border: "1px solid var(--line)",
+                background: "var(--paper-deep)",
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {resume.fileName}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+                    {formatBytes(resume.size)} · uploaded {niceDate(new Date(resume.uploadedAt).toISOString())}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button type="button" onClick={() => downloadResumeFile(resume)} style={ghostBtnSm}>
+                    <Download size={13} /> Download
+                  </button>
+                  <button type="button" onClick={() => resumeRef.current?.click()} disabled={uploading} style={ghostBtnSm}>
+                    <Upload size={13} /> Replace
+                  </button>
+                  <button type="button" onClick={handleRemoveResume} style={{ ...ghostBtnSm, color: "var(--rose)" }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => resumeRef.current?.click()} disabled={uploading} style={{
+                ...ghostBtn, width: "100%", justifyContent: "center", padding: "14px",
+                border: "1px dashed var(--line)", borderRadius: 8,
+              }}>
+                <Upload size={15} /> {uploading ? "Uploading…" : "Upload resume (PDF or Word, max 2 MB)"}
+              </button>
+            )}
+          </Field>
+
           <Field label="What you're looking for / why you're reaching out">
             <textarea value={local.outreachAngle} onChange={(e) => u("outreachAngle", e.target.value)}
               style={{ ...inputBase, minHeight: 70, resize: "vertical" }}
@@ -4633,7 +4789,7 @@ function Dashboard({ applications, outreach, meetings, contacts = [], activities
           kind: o.direction === "inbound" ? "outreach_in" : "outreach_out",
           ts: t,
           title: o.contact || "Unknown",
-          subtitle: o.company ? `${o.channel || "—"} · ${o.company}` : (o.channel || "—"),
+          subtitle: [o.contactTitle, o.company].filter(Boolean).join(" at ") || (o.channel || "—"),
           onClick: () => setTab("outreach"),
         });
       }
