@@ -603,6 +603,7 @@ export default function JobSearchTracker() {
           <OutreachView
             outreach={outreach}
             upsertOutreach={upsertOutreach}
+            upsertCompany={upsertCompany}
             deleteOutreach={deleteOutreach}
             flash={flash}
           />
@@ -1440,7 +1441,12 @@ function FindingCard({ f, matchedContact, onPipeline, onOutreach, onMarkReplied,
 /* ============================================================
    OUTREACH
    ============================================================ */
-function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
+function syncCompanyFromOutreach(upsertCompany, companyName) {
+  const name = (companyName || "").trim();
+  if (name) upsertCompany({ name, source: "outreach" });
+}
+
+function OutreachView({ outreach, upsertOutreach, upsertCompany, deleteOutreach, flash }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   return (
@@ -1492,6 +1498,7 @@ function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
       {adding && (
         <Modal onClose={() => setAdding(false)} title="Log a message">
           <ManualOutreachForm onSave={(d) => {
+            syncCompanyFromOutreach(upsertCompany, d.company);
             upsertOutreach(d);
             setAdding(false);
             flash("Logged");
@@ -1504,6 +1511,7 @@ function OutreachView({ outreach, upsertOutreach, deleteOutreach, flash }) {
           <ManualOutreachForm
             initial={editing}
             onSave={(d) => {
+              syncCompanyFromOutreach(upsertCompany, d.company);
               upsertOutreach({ ...editing, ...d });
               setEditing(null);
               flash("Updated");
