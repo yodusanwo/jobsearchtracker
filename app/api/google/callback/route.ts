@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { exchangeCodeForTokens, saveGmailTokens } from "@/lib/google/tokens";
-
-function siteUrl() {
-  return process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
-}
+import { resolveSiteUrl } from "@/lib/google/site-url";
 
 export async function GET(req: NextRequest) {
-  const base = siteUrl();
+  const base = resolveSiteUrl(req);
   const fail = (msg: string) =>
     NextResponse.redirect(new URL(`/?tab=inbox&gmail_error=${encodeURIComponent(msg)}`, base));
 
