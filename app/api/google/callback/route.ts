@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { exchangeCodeForTokens, saveGmailTokens } from "@/lib/google/tokens";
-import { resolveSiteUrl } from "@/lib/google/site-url";
+import { resolveSiteUrl, gmailRedirectUri } from "@/lib/google/site-url";
 
 export async function GET(req: NextRequest) {
   const base = resolveSiteUrl(req);
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const redirectUri = `${base}/api/google/callback`;
+    const redirectUri = gmailRedirectUri(req);
     const tokens = await exchangeCodeForTokens(code, redirectUri);
     await saveGmailTokens(userId, tokens);
     const email = tokens.email ? `&gmail_email=${encodeURIComponent(tokens.email)}` : "";

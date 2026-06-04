@@ -9,27 +9,21 @@ function originFromRequest(req: NextRequest): string | null {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-/** Origin for OAuth redirects — prefers env, then request host (Vercel), then localhost. */
+/** Origin for OAuth redirects — use the incoming request host when available. */
 export function resolveSiteUrl(req?: NextRequest): string {
-  const fromEnv = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
   const fromRequest = req ? originFromRequest(req) : null;
-
-  // Deployed site must not redirect to localhost because env was copied from .env.local
-  if (
-    fromRequest &&
-    !fromRequest.includes("localhost") &&
-    fromEnv &&
-    fromEnv.includes("localhost")
-  ) {
-    return fromRequest;
-  }
-
-  if (fromEnv) return fromEnv;
   if (fromRequest) return fromRequest;
+
+  const fromEnv = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
+  if (fromEnv) return fromEnv;
 
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`.replace(/\/$/, "");
   }
 
   return "http://localhost:3000";
+}
+
+export function gmailRedirectUri(req?: NextRequest) {
+  return `${resolveSiteUrl(req)}/api/google/callback`;
 }

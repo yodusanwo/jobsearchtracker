@@ -180,6 +180,9 @@ async function callAI({ system, content, mcp = [], tools = [], maxTokens = 2000,
   if (res.status === 503 && data.code === "gmail_storage_not_ready") {
     throw new Error("GMAIL_STORAGE_NOT_READY");
   }
+  if (res.status === 413) {
+    throw new Error("PAYLOAD_TOO_LARGE");
+  }
   if (!res.ok) {
     const msg =
       (typeof data.error === "object" && data.error?.message) ||
@@ -223,6 +226,73 @@ function fileToBase64(file) {
     r.onerror = () => reject(new Error("Read failed"));
     r.readAsDataURL(file);
   });
+}
+
+const CAPTURE_MAX_IMAGE_DIM = 2400;
+const CAPTURE_MAX_IMAGE_BYTES = 1.4 * 1024 * 1024;
+const CAPTURE_MAX_PDF_BYTES = 3 * 1024 * 1024;
+
+/** Resize/compress screenshots so Capture stays under Vercel's ~4.5 MB request limit. */
+async function prepareCaptureImage(file) {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Not an image");
+  }
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    const base64 = await fileToBase64(file);
+    return { base64, mime: file.type, previewUrl: URL.createObjectURL(file), wasCompressed: false };
+  }
+
+  let { width, height } = bitmap;
+  const scale = Math.min(1, CAPTURE_MAX_IMAGE_DIM / Math.max(width, height));
+  const w = Math.max(1, Math.round(width * scale));
+  const h = Math.max(1, Math.round(height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+
+  let quality = 0.88;
+  let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  while (blob && blob.size > CAPTURE_MAX_IMAGE_BYTES && quality > 0.52) {
+    quality -= 0.08;
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  }
+  if (!blob) throw new Error("Could not process image");
+
+  const base64 = await fileToBase64(blob);
+  return {
+    base64,
+    mime: "image/jpeg",
+    previewUrl: URL.createObjectURL(blob),
+    wasCompressed: scale < 1 || file.size > blob.size,
+    sizeLabel: formatBytes(blob.size),
+  };
+}
+
+async function prepareCapturePdf(file) {
+  if (file.size > CAPTURE_MAX_PDF_BYTES) {
+    throw new Error(`PDF too large (${formatBytes(file.size)}). Max ${formatBytes(CAPTURE_MAX_PDF_BYTES)} — try a screenshot instead.`);
+  }
+  return {
+    base64: await fileToBase64(file),
+    mime: file.type,
+    previewUrl: null,
+    wasCompressed: false,
+    sizeLabel: formatBytes(file.size),
+  };
+}
+
+function formatAiError(err) {
+  const msg = err?.message || String(err);
+  if (msg === "PAYLOAD_TOO_LARGE" || msg.includes("413")) {
+    return "File too large to analyze — try a smaller screenshot or crop to the relevant part.";
+  }
+  return msg;
 }
 
 const MAX_RESUME_BYTES = 2 * 1024 * 1024;
@@ -847,11 +917,11 @@ function RejectionUploadModal({ onClose, onSave, flash }) {
     const isEmailText = file.type.startsWith("text/") || /\.(eml|txt|html?)$/i.test(file.name);
     try {
       if (isImage || isPdf) {
-        const base64 = await fileToBase64(file);
+        const prep = isPdf ? await prepareCapturePdf(file) : await prepareCaptureImage(file);
         await analyzeBlocks([
           isPdf
-            ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
-            : { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
+            ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: prep.base64 } }
+            : { type: "image", source: { type: "base64", media_type: prep.mime, data: prep.base64 } },
         ]);
       } else if (isEmailText) {
         const text = await file.text();
@@ -1444,6 +1514,14 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
   const [gmailStatus, setGmailStatus] = useState({
     loading: true, configured: false, connected: false, email: null, storageReady: true, setupRequired: false,
   });
+  const [oauthRedirectUri, setOauthRedirectUri] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/google/setup")
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.redirectUri) setOauthRedirectUri(d.redirectUri); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1491,7 +1569,10 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     }
     const err = params.get("gmail_error");
     if (err) {
-      flash(decodeURIComponent(err), "err");
+      const decoded = decodeURIComponent(err);
+      flash(decoded.includes("redirect_uri") || decoded === "redirect_uri_mismatch"
+        ? "Google redirect URI mismatch — add the URI below to your Web OAuth client"
+        : decoded, "err");
       params.delete("gmail_error");
       const qs = params.toString();
       window.history.replaceState({}, "", qs ? `?${qs}` : window.location.pathname);
@@ -1684,6 +1765,15 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         }}>
           <strong style={{ fontWeight: 600 }}>Connect Gmail once</strong> — uses Google OAuth in Testing mode (no $500 audit for personal use).
           Add yourself as a test user in Google Cloud, then click Connect Gmail above.
+          {oauthRedirectUri && (
+            <div style={{ marginTop: 10, fontSize: 12 }}>
+              <div style={{ color: "var(--ink-3)", marginBottom: 4 }}>Add this exact URI in Google → Clients → <strong>Web application</strong> → Authorized redirect URIs:</div>
+              <code className="jl-mono" style={{
+                display: "block", padding: "8px 10px", background: "var(--paper)",
+                borderRadius: 6, wordBreak: "break-all", fontSize: 11,
+              }}>{oauthRedirectUri}</code>
+            </div>
+          )}
         </div>
       )}
 
@@ -2663,17 +2753,18 @@ function CaptureModal({ onClose, onSaveApp, onSaveOutreach, onSaveMeeting }) {
       (async () => {
         const processed = await Promise.all(accepted.map(async (file) => {
           try {
-            const base64 = await fileToBase64(file);
             const isPdf = file.type === "application/pdf";
+            const prep = isPdf ? await prepareCapturePdf(file) : await prepareCaptureImage(file);
             return {
-              base64,
-              mime: file.type,
+              base64: prep.base64,
+              mime: prep.mime,
               kind: isPdf ? "pdf" : "image",
-              url: isPdf ? null : URL.createObjectURL(file),
+              url: prep.previewUrl,
               name: file.name,
               id: uid(),
             };
-          } catch {
+          } catch (e) {
+            setError(e.message || "Could not read file");
             return null;
           }
         }));
@@ -2811,7 +2902,7 @@ When multiple screenshots show parts of the same thing, merge: combine message t
         setError("Couldn't read the screenshot. Try a clearer one or add manually.");
       }
     } catch (e) {
-      setError("Analysis failed: " + e.message);
+      setError("Analysis failed: " + formatAiError(e));
     } finally {
       setProcessing(false);
     }

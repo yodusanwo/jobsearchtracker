@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { buildGoogleAuthUrl, isGoogleOAuthConfigured } from "@/lib/google/tokens";
-import { resolveSiteUrl } from "@/lib/google/site-url";
+import { resolveSiteUrl, gmailRedirectUri } from "@/lib/google/site-url";
 
 export async function GET(req: NextRequest) {
   if (!isGoogleOAuthConfigured()) {
@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
     path: "/",
   });
 
-  const redirectUri = `${base}/api/google/callback`;
+  const redirectUri = gmailRedirectUri(req);
   const url = buildGoogleAuthUrl(redirectUri, state);
   return NextResponse.redirect(url);
 }
