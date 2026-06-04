@@ -333,6 +333,39 @@ const STATUSES = [
   { id: "closed", label: "Closed" },
 ];
 
+const APPLIED_PLUS_STATUSES = new Set(["applied", "screen", "interview", "offer"]);
+
+function isAppliedApplication(a) {
+  if (!a) return false;
+  if (a.dateApplied) return true;
+  return APPLIED_PLUS_STATUSES.has(a.status || "saved");
+}
+
+function applicationAppliedTimestamp(a) {
+  if (!a) return 0;
+  if (a.dateApplied) {
+    const t = new Date(a.dateApplied).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  if (APPLIED_PLUS_STATUSES.has(a.status || "saved")) {
+    if (a.updatedAt) return a.updatedAt;
+    if (a.createdAt) return a.createdAt;
+    if (a.dateSaved) {
+      const t = new Date(a.dateSaved).getTime();
+      if (!isNaN(t) && t > 0) return t;
+    }
+  }
+  return 0;
+}
+
+function ensureDateApplied(app) {
+  const status = app.status || "saved";
+  if (APPLIED_PLUS_STATUSES.has(status) && !app.dateApplied) {
+    return { ...app, dateApplied: todayISO() };
+  }
+  return app;
+}
+
 const statusDot = (id) => {
   if (id === "saved") return "var(--ink-3)";
   if (id === "applied") return "var(--amber)";
@@ -386,7 +419,10 @@ export default function JobSearchTracker() {
         loadKey(STORAGE_KEYS.activities, []),
         loadKey(STORAGE_KEYS.resume, null),
       ]);
-      setApplications(apps);
+      const appsFixed = apps.map((a) => ensureDateApplied(a));
+      const appsChanged = appsFixed.some((a, i) => a.dateApplied !== apps[i]?.dateApplied);
+      if (appsChanged) saveKey(STORAGE_KEYS.applications, appsFixed);
+      setApplications(appsFixed);
       setOutreach(out);
       setMeetings(meets);
       let mergedContacts = cts;
@@ -423,9 +459,13 @@ export default function JobSearchTracker() {
   const upsertApp = useCallback((app) => {
     setApplications((prev) => {
       const exists = prev.find((p) => p.id === app.id);
+      let merged = exists
+        ? { ...exists, ...app, updatedAt: Date.now() }
+        : { ...app, id: app.id || uid(), createdAt: Date.now(), updatedAt: Date.now() };
+      merged = ensureDateApplied(merged);
       const next = exists
-        ? prev.map((p) => p.id === app.id ? { ...p, ...app, updatedAt: Date.now() } : p)
-        : [{ ...app, id: app.id || uid(), createdAt: Date.now(), updatedAt: Date.now() }, ...prev];
+        ? prev.map((p) => p.id === merged.id ? merged : p)
+        : [merged, ...prev];
       saveKey(STORAGE_KEYS.applications, next);
       return next;
     });
@@ -1444,7 +1484,7 @@ function ApplicationDetail({ app, onClose, onUpdate, onDelete }) {
               return (
                 <button key={s.id} onClick={() => {
                   const patch = { status: s.id };
-                  if (s.id === "applied" && !app.dateApplied) patch.dateApplied = todayISO();
+                  if (APPLIED_PLUS_STATUSES.has(s.id) && !app.dateApplied) patch.dateApplied = todayISO();
                   onUpdate(patch);
                 }} style={{
                   padding: "6px 12px", borderRadius: 999,
@@ -1599,6 +1639,25 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
   const persist = (next, ts, ov) =>
     saveKey(STORAGE_KEYS.inboxState, { findings: next, lastScan: ts, lastSummary: ts, overview: ov ?? overview });
 
+  const mergeSummaryWithRaw = (aiEmails, rawEmails) => {
+    if (!rawEmails.length) return [];
+    const ai = Array.isArray(aiEmails) ? aiEmails : [];
+    return rawEmails.map((raw, i) => {
+      const fromAi = ai[i] || {};
+      return {
+        subject: fromAi.subject || raw.subject,
+        contact_name: fromAi.contact_name || fromAi.fromName || raw.fromName || raw.from,
+        contact_email: fromAi.contact_email || fromAi.fromEmail || raw.fromEmail,
+        date: fromAi.date || raw.date,
+        summary: fromAi.summary || fromAi.snippet || raw.snippet || "(no preview)",
+        job_relevant: !!fromAi.job_relevant,
+        category: fromAi.category || null,
+        company: fromAi.company || "",
+        role: fromAi.role || "",
+      };
+    });
+  };
+
   const summarizeInbox = async () => {
     if (!gmailStatus.connected) {
       flash("Connect Gmail first", "err");
@@ -1606,65 +1665,86 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     }
     setSummarizing(true);
     try {
+      const recentRes = await fetch("/api/google/recent?limit=10");
+      const recentData = await recentRes.json().catch(() => ({}));
+      if (recentRes.status === 403 || recentData.code === "gmail_not_connected") {
+        flash("Connect Gmail to summarize your inbox", "err");
+        refreshGmailStatus();
+        return;
+      }
+      if (recentRes.status === 503 && recentData.code === "gmail_storage_not_ready") {
+        flash("Run user_integrations SQL in Supabase, then Connect Gmail again", "err");
+        refreshGmailStatus();
+        return;
+      }
+      if (!recentRes.ok) {
+        flash(recentData.error || "Couldn't load Gmail messages", "err");
+        return;
+      }
+
+      const rawEmails = recentData.emails || [];
+      if (!rawEmails.length) {
+        flash("No messages found in the connected Gmail account", "err");
+        return;
+      }
+
       const trackedEmails = contacts
         .filter((c) => c.email && (c.status === "sent" || c.status === "drafted"))
         .map((c) => c.email.toLowerCase())
         .slice(0, 30);
       const trackedNote = trackedEmails.length
-        ? `\n\nThese are campaign contacts the user has emailed — flag any email from them with job_relevant: true and category "follow_up_needed" or appropriate job category:\n${trackedEmails.join(", ")}`
+        ? `\nCampaign contacts (flag replies from these as job_relevant): ${trackedEmails.join(", ")}`
         : "";
 
       const { text } = await callAI({
-        system: "You read the user's Gmail and write concise summaries. Return only valid JSON, no markdown.",
-        content: `Use Gmail to fetch the user's 10 most recent email threads (newest first, any folder/label).
+        system: "You summarize email metadata. Use only the provided messages — do not invent any. Return only valid JSON, no markdown.",
+        content: `Summarize these ${rawEmails.length} recent Gmail messages (newest first):
 
-For each thread, read enough to understand what it's about. Then return ONLY this JSON object:
+${JSON.stringify(rawEmails, null, 2)}
 
+Return ONLY this JSON object:
 {
-  "overview": "2-3 sentence digest of what's in their inbox lately — themes, urgency, anything job-search related",
+  "overview": "2-3 sentence digest of these emails — themes, urgency, anything job-search related",
   "emails": [
     {
-      "subject": "thread subject line",
+      "subject": "same as input",
       "contact_name": "sender display name",
-      "contact_email": "sender email address",
-      "date": "ISO date of the latest message",
-      "summary": "1-2 sentence plain-English summary",
+      "contact_email": "sender email",
+      "date": "ISO date",
+      "summary": "1-2 sentence plain-English summary (expand on snippet, don't just copy it)",
       "job_relevant": true or false,
-      "category": if job_relevant, one of "recruiter_outreach", "application_confirmation", "interview_scheduling", "offer", "rejection", "follow_up_needed", "other" — otherwise null,
-      "company": "company name if identifiable, else empty string",
-      "role": "role title if mentioned, else empty string"
+      "category": if job_relevant, one of "recruiter_outreach", "application_confirmation", "interview_scheduling", "offer", "rejection", "follow_up_needed", "other" — else null,
+      "company": "",
+      "role": ""
     }
   ]
 }
 
 Rules:
-- Exactly 10 emails in the array, ordered newest first.
-- Include every email even if unrelated to job search (set job_relevant: false).
-- Always include contact_email when available.${trackedNote}`,
-        mcp: [{ type: "url", url: "https://gmailmcp.googleapis.com/mcp/v1", name: "gmail" }],
+- Exactly ${rawEmails.length} items in emails[], same order as input.
+- One entry per input message.${trackedNote}`,
         maxTokens: 4000,
         feature: "inbox_summary",
       });
+
       const parsed = extractJSON(text);
-      let emails = [];
+      let aiEmails = [];
       let digest = "";
       if (parsed && Array.isArray(parsed.emails)) {
-        emails = parsed.emails;
+        aiEmails = parsed.emails;
         digest = typeof parsed.overview === "string" ? parsed.overview : "";
       } else if (Array.isArray(parsed)) {
-        emails = parsed;
+        aiEmails = parsed;
       }
-      if (Array.isArray(emails)) {
-        const enriched = emails.map((f) => ({ ...f, id: uid() }));
-        setFindings(enriched);
-        setOverview(digest);
-        const ts = Date.now();
-        setLastSummary(ts);
-        persist(enriched, ts, digest);
-        flash(`Summarized ${enriched.length} email${enriched.length === 1 ? "" : "s"}`);
-      } else {
-        flash("Couldn't parse the summary", "err");
-      }
+
+      const merged = mergeSummaryWithRaw(aiEmails, rawEmails);
+      const enriched = merged.map((f) => ({ ...f, id: uid() }));
+      setFindings(enriched);
+      setOverview(digest || `Your ${enriched.length} most recent emails from ${gmailStatus.email || "Gmail"}.`);
+      const ts = Date.now();
+      setLastSummary(ts);
+      persist(enriched, ts, digest);
+      flash(`Summarized ${enriched.length} email${enriched.length === 1 ? "" : "s"}`);
     } catch (e) {
       if (e.message === "GMAIL_NOT_CONNECTED") {
         flash("Connect Gmail to summarize your inbox", "err");
@@ -1697,7 +1777,7 @@ Rules:
       company: f.company || "Unknown",
       role: f.role || "",
       status,
-      dateApplied: f.category === "application_confirmation" ? f.date : undefined,
+      dateApplied: status !== "saved" && status !== "closed" ? (f.date || todayISO()) : undefined,
       dateSaved: todayISO(),
       notes: `From Gmail (${f.subject || ""})\n${f.summary || f.snippet || ""}\n\nContact: ${f.contact_name || ""} <${f.contact_email || ""}>`,
     });
@@ -2971,7 +3051,7 @@ When multiple screenshots show parts of the same thing, merge: combine message t
         jobType: d.jobType || "",
         status: d.status_hint || (result.type === "email_rejection" ? "closed" : result.type === "application_confirmation" ? "applied" : "saved"),
         dateSaved: todayISO(),
-        dateApplied: result.type === "application_confirmation" ? todayISO() : undefined,
+        dateApplied: undefined,
         notes: [result.summary, d.requirements?.length ? "Requirements:\n" + d.requirements.map(r => "• " + r).join("\n") : "", d.message ? `Message:\n${d.message}` : ""].filter(Boolean).join("\n\n"),
       });
     } else if (dest === "outreach") {
@@ -5556,9 +5636,15 @@ function Dashboard({ applications, outreach, meetings, contacts = [], activities
     const inPeriod = (t) => period === "all" ? t > 0 : t >= cutoff && t <= now;
     const inPrev = (t) => period === "all" ? false : t >= prevCutoff && t < cutoff;
 
-    // Applications applied to in window (by dateApplied)
-    const appliedCur = applications.filter((a) => inPeriod(tsOf(a.dateApplied))).length;
-    const appliedPrev = applications.filter((a) => inPrev(tsOf(a.dateApplied))).length;
+    // Applications applied to in window
+    const appliedCur = applications.filter((a) => {
+      const t = applicationAppliedTimestamp(a);
+      return isAppliedApplication(a) && inPeriod(t);
+    }).length;
+    const appliedPrev = applications.filter((a) => {
+      const t = applicationAppliedTimestamp(a);
+      return isAppliedApplication(a) && inPrev(t);
+    }).length;
 
     // Outreach in window
     const outreachCur = outreach.filter((o) => inPeriod(tsOf(o.date) || o.id ? tsOf(o.date) : 0)).length;
@@ -5601,9 +5687,10 @@ function Dashboard({ applications, outreach, meetings, contacts = [], activities
     // Recent activity — merge all sources, take last 7
     const activity = [];
     applications.forEach((a) => {
-      if (a.dateApplied) {
+      const appliedTs = applicationAppliedTimestamp(a);
+      if (isAppliedApplication(a) && appliedTs) {
         activity.push({
-          kind: "applied", ts: tsOf(a.dateApplied),
+          kind: "applied", ts: appliedTs,
           title: a.company || "Unknown",
           subtitle: a.role || "",
           onClick: () => setTab("pipeline"),
@@ -6166,8 +6253,8 @@ function DailyBriefing({ applications, outreach, meetings, contacts, settings, s
       const byStatus = {};
       STATUSES.forEach((s) => byStatus[s.id] = 0);
       applications.forEach((a) => { byStatus[a.status || "saved"] = (byStatus[a.status || "saved"] || 0) + 1; });
-      const appliedLast7 = applications.filter((a) => tsOf(a.dateApplied) >= last7).length;
-      const stuckInApplied = applications.filter((a) => a.status === "applied" && tsOf(a.dateApplied) > 0 && tsOf(a.dateApplied) < last14);
+      const appliedLast7 = applications.filter((a) => isAppliedApplication(a) && applicationAppliedTimestamp(a) >= last7).length;
+      const stuckInApplied = applications.filter((a) => a.status === "applied" && applicationAppliedTimestamp(a) > 0 && applicationAppliedTimestamp(a) < last14);
 
       // Outreach stats
       const outboundLast7 = outreach.filter((o) => o.direction === "outbound" && tsOf(o.date) >= last7).length;
