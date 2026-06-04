@@ -102,7 +102,26 @@ export async function POST(req: NextRequest) {
           { status: 401 }
         );
       }
-      const gmailToken = await getGmailAccessToken(userId);
+      let gmailToken: string | null;
+      try {
+        gmailToken = await getGmailAccessToken(userId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "";
+        if (msg === "GMAIL_STORAGE_NOT_READY") {
+          return NextResponse.json(
+            {
+              error: "Gmail storage is not set up. Run the user_integrations SQL in Supabase (see docs/gmail-setup.md), then connect Gmail again.",
+              code: "gmail_storage_not_ready",
+            },
+            { status: 503 }
+          );
+        }
+        console.error("Gmail token load failed:", e);
+        return NextResponse.json(
+          { error: "Could not load Gmail connection", code: "gmail_token_error" },
+          { status: 500 }
+        );
+      }
       if (!gmailToken) {
         return NextResponse.json(
           { error: "Connect Gmail in the Inbox tab first", code: "gmail_not_connected" },
@@ -125,6 +144,7 @@ export async function POST(req: NextRequest) {
     const data = await upstream.json();
 
     if (!upstream.ok) {
+      console.error("anthropic upstream error", upstream.status, JSON.stringify(data).slice(0, 2000));
       return NextResponse.json(data, { status: upstream.status });
     }
 

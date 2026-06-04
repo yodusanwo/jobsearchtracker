@@ -169,15 +169,25 @@ async function callAI({ system, content, mcp = [], tools = [], maxTokens = 2000,
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "Add billing to continue using AI features");
   }
+  const data = await res.json().catch(() => ({}));
   if (res.status === 403 || res.status === 401) {
-    const err = await res.json().catch(() => ({}));
-    if (err.code === "gmail_not_connected") {
+    if (data.code === "gmail_not_connected") {
       throw new Error("GMAIL_NOT_CONNECTED");
     }
-    throw new Error(err.error || "API " + res.status);
+    const msg = typeof data.error === "string" ? data.error : data.error?.message;
+    throw new Error(msg || "API " + res.status);
   }
-  if (!res.ok) throw new Error("API " + res.status);
-  const data = await res.json();
+  if (res.status === 503 && data.code === "gmail_storage_not_ready") {
+    throw new Error("GMAIL_STORAGE_NOT_READY");
+  }
+  if (!res.ok) {
+    const msg =
+      (typeof data.error === "object" && data.error?.message) ||
+      (typeof data.error === "string" && data.error) ||
+      data.message ||
+      `API ${res.status}`;
+    throw new Error(msg);
+  }
   const text = (data.content || [])
     .filter((b) => b.type === "text")
     .map((b) => b.text)
@@ -1431,7 +1441,9 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
   const [findings, setFindings] = useState([]);
   const [lastScan, setLastScan] = useState(null);
   const [days, setDays] = useState(14);
-  const [gmailStatus, setGmailStatus] = useState({ loading: true, configured: false, connected: false, email: null });
+  const [gmailStatus, setGmailStatus] = useState({
+    loading: true, configured: false, connected: false, email: null, storageReady: true, setupRequired: false,
+  });
 
   useEffect(() => {
     (async () => {
@@ -1447,7 +1459,7 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     try {
       const res = await fetch("/api/google/status");
       if (!res.ok) {
-        setGmailStatus({ loading: false, configured: false, connected: false, email: null });
+        setGmailStatus({ loading: false, configured: false, connected: false, email: null, storageReady: true, setupRequired: false });
         return;
       }
       const data = await res.json();
@@ -1456,9 +1468,11 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
         configured: !!data.configured,
         connected: !!data.connected,
         email: data.email || null,
+        storageReady: data.storageReady !== false,
+        setupRequired: !!data.setupRequired,
       });
     } catch {
-      setGmailStatus({ loading: false, configured: false, connected: false, email: null });
+      setGmailStatus({ loading: false, configured: false, connected: false, email: null, storageReady: true, setupRequired: false });
     }
   }, []);
 
@@ -1545,6 +1559,9 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
     } catch (e) {
       if (e.message === "GMAIL_NOT_CONNECTED") {
         flash("Connect Gmail to scan your inbox", "err");
+        refreshGmailStatus();
+      } else if (e.message === "GMAIL_STORAGE_NOT_READY") {
+        flash("Run user_integrations SQL in Supabase, then Connect Gmail again", "err");
         refreshGmailStatus();
       } else {
         flash("Scan failed: " + e.message, "err");
@@ -1647,7 +1664,19 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         </div>
       </div>
 
-      {!gmailStatus.loading && !gmailStatus.connected && gmailStatus.configured && (
+      {!gmailStatus.loading && gmailStatus.setupRequired && (
+        <div style={{
+          padding: "14px 16px", marginBottom: 20, borderRadius: 10,
+          background: "var(--rose-soft)", border: "1px solid var(--rose)",
+          fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55,
+        }}>
+          <strong style={{ fontWeight: 600, color: "var(--rose)" }}>Database setup required.</strong>{" "}
+          Open Supabase → SQL Editor and run the <code className="jl-mono" style={{ fontSize: 12 }}>user_integrations</code> block
+          from <code className="jl-mono" style={{ fontSize: 12 }}>supabase/schema.sql</code>, then click Connect Gmail again.
+        </div>
+      )}
+
+      {!gmailStatus.loading && !gmailStatus.connected && gmailStatus.configured && !gmailStatus.setupRequired && (
         <div style={{
           padding: "14px 16px", marginBottom: 20, borderRadius: 10,
           background: "var(--amber-soft)", border: "1px solid var(--line)",

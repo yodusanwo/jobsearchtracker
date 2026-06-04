@@ -2,9 +2,21 @@
 
 Ledger connects to Gmail via [Google's Gmail MCP server](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server) and Anthropic's MCP connector. OAuth tokens are stored server-side in Supabase (`user_integrations`).
 
-## 1. Run the schema migration
+## 1. Run the schema migration (required)
 
-In Supabase → SQL Editor, run the `user_integrations` block from `supabase/schema.sql` (or re-run the full file).
+In Supabase → **SQL Editor**, run this (or re-run the full `supabase/schema.sql`):
+
+```sql
+create table if not exists public.user_integrations (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  gmail_tokens jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_integrations enable row level security;
+```
+
+Without this table, Gmail connect and scan will fail.
 
 ## 2. Google Cloud project
 
@@ -29,14 +41,25 @@ In Supabase → SQL Editor, run the `user_integrations` block from `supabase/sch
 
 1. **Google Auth Platform → Clients → Create client**
 2. Type: **Web application**
-3. **Authorized redirect URIs**:
+3. **Authorized redirect URIs** (add both if you use local + production):
    - `http://localhost:3000/api/google/callback`
-   - `https://YOUR_PRODUCTION_DOMAIN/api/google/callback` (when deployed)
-4. Copy **Client ID** and **Client secret**
+   - `https://jobsearchtracker.vercel.app/api/google/callback`
+4. **Authorized JavaScript origins** (optional):
+   - `http://localhost:3000`
+   - `https://jobsearchtracker.vercel.app`
+5. Copy **Client ID** and **Client secret**
+
+### OAuth consent screen — authorized domain (production)
+
+Under **Google Auth Platform → Branding → Authorized domains**, add:
+
+- `jobsearchtracker.vercel.app`
+
+(This is for app branding/links on the consent screen. The redirect URI above is what actually makes OAuth work.)
 
 ## 5. Environment variables
 
-Add to `.env.local`:
+**Local** (`.env.local`):
 
 ```env
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
@@ -44,7 +67,20 @@ GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 ```
 
-Restart `npm run dev`.
+**Vercel** (Project → Settings → Environment Variables) — same keys, production values:
+
+```env
+NEXT_PUBLIC_SITE_URL=https://jobsearchtracker.vercel.app
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+```
+
+No trailing slash on `NEXT_PUBLIC_SITE_URL`. Redeploy after changing Vercel env vars.
+
+**Supabase** (Authentication → URL Configuration) — add redirect URLs:
+
+- `https://jobsearchtracker.vercel.app/auth/callback`
+- `http://localhost:3000/auth/callback` (for local dev)
 
 ## 6. Connect in Ledger
 

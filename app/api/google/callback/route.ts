@@ -41,6 +41,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL(`/?tab=inbox&gmail=connected${email}`, base));
   } catch (e) {
     const message = e instanceof Error ? e.message : "OAuth failed";
+    if (message === "GMAIL_STORAGE_NOT_READY") {
+      return fail("Run user_integrations SQL in Supabase first (see docs/gmail-setup.md)");
+    }
     return fail(message);
   }
 }

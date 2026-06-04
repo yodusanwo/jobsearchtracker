@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
-import { isGoogleOAuthConfigured, loadGmailTokens } from "@/lib/google/tokens";
+import { loadGmailTokens, isGoogleOAuthConfigured } from "@/lib/google/tokens";
 
 export async function GET() {
   const configured = isGoogleOAuthConfigured();
 
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ configured, connected: false, email: null });
+    return NextResponse.json({ configured, connected: false, email: null, storageReady: false });
   }
 
   const supabase = await createClient();
@@ -16,13 +16,27 @@ export async function GET() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ configured, connected: false, email: null }, { status: 401 });
+    return NextResponse.json({ configured, connected: false, email: null, storageReady: false }, { status: 401 });
   }
 
-  const tokens = await loadGmailTokens(user.id);
-  return NextResponse.json({
-    configured,
-    connected: !!tokens?.refresh_token,
-    email: tokens?.email ?? null,
-  });
+  try {
+    const tokens = await loadGmailTokens(user.id);
+    return NextResponse.json({
+      configured,
+      connected: !!tokens?.refresh_token,
+      email: tokens?.email ?? null,
+      storageReady: true,
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === "GMAIL_STORAGE_NOT_READY") {
+      return NextResponse.json({
+        configured,
+        connected: false,
+        email: null,
+        storageReady: false,
+        setupRequired: true,
+      });
+    }
+    throw e;
+  }
 }

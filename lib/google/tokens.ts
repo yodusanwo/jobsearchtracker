@@ -25,6 +25,13 @@ export function isGoogleOAuthConfigured() {
   return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 }
 
+export function isIntegrationsTableMissingError(error: { code?: string; message?: string }) {
+  return (
+    error.code === "PGRST205" ||
+    (error.message ?? "").includes("user_integrations")
+  );
+}
+
 export async function loadGmailTokens(userId: string): Promise<GmailTokenRecord | null> {
   if (!isSupabaseAdminConfigured()) return null;
   const supabase = createServiceClient();
@@ -33,7 +40,12 @@ export async function loadGmailTokens(userId: string): Promise<GmailTokenRecord 
     .select("gmail_tokens")
     .eq("user_id", userId)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    if (isIntegrationsTableMissingError(error)) {
+      throw new Error("GMAIL_STORAGE_NOT_READY");
+    }
+    throw error;
+  }
   const tokens = data?.gmail_tokens as GmailTokenRecord | null | undefined;
   if (!tokens?.access_token) return null;
   return tokens;
@@ -52,7 +64,12 @@ export async function saveGmailTokens(userId: string, tokens: GmailTokenRecord) 
     },
     { onConflict: "user_id" }
   );
-  if (error) throw error;
+  if (error) {
+    if (isIntegrationsTableMissingError(error)) {
+      throw new Error("GMAIL_STORAGE_NOT_READY");
+    }
+    throw error;
+  }
 }
 
 export async function deleteGmailTokens(userId: string) {
