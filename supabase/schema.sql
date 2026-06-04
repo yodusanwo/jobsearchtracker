@@ -94,3 +94,15 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- ---------------------------------------------------------------------------
+-- OAuth tokens (Gmail, etc.) — server-only via service role, no client RLS
+-- ---------------------------------------------------------------------------
+create table if not exists public.user_integrations (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  gmail_tokens jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_integrations enable row level security;
+-- Intentionally no policies: only the service role (API routes) may read/write tokens.

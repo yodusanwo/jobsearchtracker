@@ -151,8 +151,15 @@ async function callAI({ system, content, mcp = [], tools = [], maxTokens = 2000,
     feature,
   };
   if (system) body.system = system;
-  if (mcp.length) body.mcp_servers = mcp;
-  if (tools.length) body.tools = tools;
+  if (mcp.length) {
+    body.mcp_servers = mcp;
+    const toolsets = mcp
+      .filter((s) => s.name)
+      .map((s) => ({ type: "mcp_toolset", mcp_server_name: s.name }));
+    body.tools = [...tools, ...toolsets];
+  } else if (tools.length) {
+    body.tools = tools;
+  }
   const res = await fetch("/api/anthropic", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -161,6 +168,13 @@ async function callAI({ system, content, mcp = [], tools = [], maxTokens = 2000,
   if (res.status === 402) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "Add billing to continue using AI features");
+  }
+  if (res.status === 403 || res.status === 401) {
+    const err = await res.json().catch(() => ({}));
+    if (err.code === "gmail_not_connected") {
+      throw new Error("GMAIL_NOT_CONNECTED");
+    }
+    throw new Error(err.error || "API " + res.status);
   }
   if (!res.ok) throw new Error("API " + res.status);
   const data = await res.json();
@@ -509,9 +523,11 @@ export default function JobSearchTracker() {
       <header style={{
         borderBottom: "1px solid var(--line)", background: "var(--paper)",
         position: "sticky", top: 0, zIndex: 30,
+        paddingLeft: "max(28px, env(safe-area-inset-left))",
+        paddingRight: "max(36px, env(safe-area-inset-right))",
       }}>
         <div style={{
-          maxWidth: 1280, margin: "0 auto", padding: "18px 28px",
+          maxWidth: 1280, margin: "0 auto", padding: "18px 0",
           display: "flex", alignItems: "center", justifyContent: "space-between",
           gap: 16, flexWrap: "wrap",
         }}>
@@ -556,7 +572,10 @@ export default function JobSearchTracker() {
         </div>
       </header>
 
-      <main style={{ maxWidth: 1280, margin: "0 auto", padding: "32px 28px" }}>
+      <main style={{
+        maxWidth: 1280, margin: "0 auto",
+        padding: "32px max(36px, env(safe-area-inset-right)) 32px max(28px, env(safe-area-inset-left))",
+      }}>
         {tab === "dashboard" && (
           <Dashboard
             applications={applications}
@@ -1412,6 +1431,7 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
   const [findings, setFindings] = useState([]);
   const [lastScan, setLastScan] = useState(null);
   const [days, setDays] = useState(14);
+  const [gmailStatus, setGmailStatus] = useState({ loading: true, configured: false, connected: false, email: null });
 
   useEffect(() => {
     (async () => {
@@ -1423,9 +1443,60 @@ function InboxView({ upsertApp, upsertOutreach, upsertMeeting, contacts = [], up
     })();
   }, []);
 
+  const refreshGmailStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/google/status");
+      if (!res.ok) {
+        setGmailStatus({ loading: false, configured: false, connected: false, email: null });
+        return;
+      }
+      const data = await res.json();
+      setGmailStatus({
+        loading: false,
+        configured: !!data.configured,
+        connected: !!data.connected,
+        email: data.email || null,
+      });
+    } catch {
+      setGmailStatus({ loading: false, configured: false, connected: false, email: null });
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshGmailStatus();
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("gmail") === "connected") {
+      flash(`Gmail connected${params.get("gmail_email") ? ` — ${decodeURIComponent(params.get("gmail_email"))}` : ""}`);
+      params.delete("gmail");
+      params.delete("gmail_email");
+      params.delete("gmail_error");
+      const qs = params.toString();
+      window.history.replaceState({}, "", qs ? `?${qs}` : window.location.pathname);
+      refreshGmailStatus();
+    }
+    const err = params.get("gmail_error");
+    if (err) {
+      flash(decodeURIComponent(err), "err");
+      params.delete("gmail_error");
+      const qs = params.toString();
+      window.history.replaceState({}, "", qs ? `?${qs}` : window.location.pathname);
+    }
+  }, [flash, refreshGmailStatus]);
+
+  const disconnectGmail = async () => {
+    await fetch("/api/google/disconnect", { method: "POST" });
+    setGmailStatus({ loading: false, configured: gmailStatus.configured, connected: false, email: null });
+    flash("Gmail disconnected");
+  };
+
   const persist = (next, ts) => saveKey(STORAGE_KEYS.inboxState, { findings: next, lastScan: ts });
 
   const scan = async () => {
+    if (!gmailStatus.connected) {
+      flash("Connect Gmail first", "err");
+      return;
+    }
     setScanning(true);
     try {
       const trackedEmails = contacts
@@ -1472,7 +1543,12 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
         flash("Couldn't parse the scan", "err");
       }
     } catch (e) {
-      flash("Scan failed: " + e.message, "err");
+      if (e.message === "GMAIL_NOT_CONNECTED") {
+        flash("Connect Gmail to scan your inbox", "err");
+        refreshGmailStatus();
+      } else {
+        flash("Scan failed: " + e.message, "err");
+      }
     } finally {
       setScanning(false);
     }
@@ -1534,7 +1610,28 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
             {lastScan ? `Last scanned ${niceDate(new Date(lastScan).toISOString())}` : "Scan your Gmail for job-search activity"}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {!gmailStatus.loading && (
+            gmailStatus.connected ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{
+                  fontSize: 12, color: "var(--moss)", background: "var(--moss-soft)",
+                  padding: "6px 10px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 6,
+                }}>
+                  <CheckCircle2 size={13} /> {gmailStatus.email || "Gmail connected"}
+                </span>
+                <button onClick={disconnectGmail} style={ghostBtnSm}>Disconnect</button>
+              </div>
+            ) : gmailStatus.configured ? (
+              <a href="/api/google/auth" style={{ ...primaryBtn, textDecoration: "none", background: "var(--moss)" }}>
+                <Mail size={14} /> Connect Gmail
+              </a>
+            ) : (
+              <span style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 220, lineHeight: 1.4 }}>
+                Gmail OAuth not configured — add GOOGLE_CLIENT_ID to .env.local
+              </span>
+            )
+          )}
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}
             style={{ ...inputBase, width: "auto", padding: "8px 12px", fontSize: 13, cursor: "pointer" }}>
             <option value={7}>last 7 days</option>
@@ -1542,12 +1639,24 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
             <option value={30}>last 30 days</option>
             <option value={60}>last 60 days</option>
           </select>
-          <button onClick={scan} disabled={scanning} style={{ ...primaryBtn, opacity: scanning ? 0.6 : 1 }}>
+          <button onClick={scan} disabled={scanning || !gmailStatus.connected}
+            style={{ ...primaryBtn, opacity: scanning || !gmailStatus.connected ? 0.6 : 1 }}>
             {scanning ? <RefreshCw size={15} className="jl-spin" /> : <Sparkles size={15} />}
             {scanning ? "Scanning Gmail…" : "Scan Gmail"}
           </button>
         </div>
       </div>
+
+      {!gmailStatus.loading && !gmailStatus.connected && gmailStatus.configured && (
+        <div style={{
+          padding: "14px 16px", marginBottom: 20, borderRadius: 10,
+          background: "var(--amber-soft)", border: "1px solid var(--line)",
+          fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55,
+        }}>
+          <strong style={{ fontWeight: 600 }}>Connect Gmail once</strong> — uses Google OAuth in Testing mode (no $500 audit for personal use).
+          Add yourself as a test user in Google Cloud, then click Connect Gmail above.
+        </div>
+      )}
 
       {findings.length === 0 && !scanning && (
         <div style={{
@@ -1559,11 +1668,18 @@ Return ONLY a JSON array (max 20 items). If nothing found, return []. No comment
           <h3 className="jl-display" style={{ fontSize: 22, fontWeight: 400, margin: "0 0 8px" }}>
             {lastScan ? "Inbox is quiet" : "Let me look through your email"}
           </h3>
-          <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 420, margin: "0 auto", lineHeight: 1.55 }}>
+          <p style={{ color: "var(--ink-3)", fontSize: 14, maxWidth: 420, margin: "0 auto 20px", lineHeight: 1.55 }}>
             {lastScan
               ? "No job-related threads in that window. Try a longer range."
-              : "I'll search your Gmail for recruiter messages, interview scheduling, offers, and rejections — and surface anything relevant here."}
+              : gmailStatus.connected
+                ? "I'll search your Gmail for recruiter messages, interview scheduling, offers, and rejections — and surface anything relevant here."
+                : "Connect Gmail above, then scan for recruiter messages, interview scheduling, offers, and rejections."}
           </p>
+          {!gmailStatus.connected && gmailStatus.configured && (
+            <a href="/api/google/auth" style={{ ...primaryBtn, textDecoration: "none", display: "inline-flex" }}>
+              <Mail size={14} /> Connect Gmail
+            </a>
+          )}
         </div>
       )}
 

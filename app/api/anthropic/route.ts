@@ -2,8 +2,44 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { checkUsageAllowed, recordUsageEvent } from "@/lib/billing";
+import { getGmailAccessToken } from "@/lib/google/tokens";
 
 export const maxDuration = 60;
+
+type McpServer = {
+  type?: string;
+  url?: string;
+  name?: string;
+  authorization_token?: string;
+};
+
+function isGmailMcpServer(server: McpServer) {
+  return (
+    server.name === "gmail" ||
+    (typeof server.url === "string" && server.url.includes("gmailmcp.googleapis.com"))
+  );
+}
+
+function ensureMcpToolsets(body: Record<string, unknown>) {
+  const servers = body.mcp_servers as McpServer[] | undefined;
+  if (!Array.isArray(servers) || servers.length === 0) return;
+
+  const existingTools = Array.isArray(body.tools) ? [...body.tools] : [];
+  const names = new Set(
+    existingTools
+      .filter((t) => t && typeof t === "object" && (t as { type?: string }).type === "mcp_toolset")
+      .map((t) => (t as { mcp_server_name?: string }).mcp_server_name)
+      .filter(Boolean)
+  );
+
+  for (const server of servers) {
+    if (!server.name || names.has(server.name)) continue;
+    existingTools.push({ type: "mcp_toolset", mcp_server_name: server.name });
+    names.add(server.name);
+  }
+
+  body.tools = existingTools;
+}
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -56,6 +92,27 @@ export async function POST(req: NextRequest) {
 
   if (Array.isArray(body.mcp_servers) && body.mcp_servers.length > 0) {
     headers["anthropic-beta"] = "mcp-client-2025-11-20";
+    ensureMcpToolsets(body);
+
+    const needsGmail = (body.mcp_servers as McpServer[]).some(isGmailMcpServer);
+    if (needsGmail) {
+      if (!userId) {
+        return NextResponse.json(
+          { error: "Sign in required for Gmail", code: "gmail_not_connected" },
+          { status: 401 }
+        );
+      }
+      const gmailToken = await getGmailAccessToken(userId);
+      if (!gmailToken) {
+        return NextResponse.json(
+          { error: "Connect Gmail in the Inbox tab first", code: "gmail_not_connected" },
+          { status: 403 }
+        );
+      }
+      body.mcp_servers = (body.mcp_servers as McpServer[]).map((server) =>
+        isGmailMcpServer(server) ? { ...server, authorization_token: gmailToken } : server
+      );
+    }
   }
 
   try {
